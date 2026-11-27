@@ -171,6 +171,10 @@ func waitForWlanSSID(read func() (string, error), ssid string, timeout, interval
 			if err != nil {
 				return last, err
 			}
+			if ssid == "" {
+				return last, newError(CodeCommandFailed,
+					"Wi-Fi did not disconnect (current SSID: %q)", last)
+			}
 			return last, newError(CodeCommandFailed,
 				"Wi-Fi association with %q did not complete (current SSID: %q)", ssid, last)
 		}

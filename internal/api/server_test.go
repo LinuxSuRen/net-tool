@@ -21,6 +21,7 @@ type fakeManager struct {
 	lastIP          map[string]netconf.IPConfig
 	lastDNS         map[string]netconf.DNSConfig
 	lastWifi        string
+	lastDisconnect  string
 	lastAP          string
 	stoppedAP       string
 	lastProxy       netconf.ProxyConfig
@@ -55,6 +56,13 @@ func (f *fakeManager) ScanWifi() ([]netconf.WifiNetwork, error) {
 }
 func (f *fakeManager) ConnectWifi(iface, ssid, password string) error {
 	f.lastWifi = ssid + "/" + password + "@" + iface
+	return nil
+}
+func (f *fakeManager) DisconnectWifi(iface string) error {
+	if iface == "bad" {
+		return &netconf.Error{Code: netconf.CodeCommandFailed, Err: errStr("disconnect failed")}
+	}
+	f.lastDisconnect = iface
 	return nil
 }
 
@@ -188,6 +196,17 @@ func TestWifiEndpoints(t *testing.T) {
 	rec, _ = doJSON(t, srv, http.MethodPost, "/api/wifi/connect", `{"ssid":""}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("empty ssid code = %d", rec.Code)
+	}
+	rec, _ = doJSON(t, srv, http.MethodDelete, "/api/wifi/connect?interface=Wi-Fi", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disconnect code = %d", rec.Code)
+	}
+	if mgr.lastDisconnect != "Wi-Fi" {
+		t.Errorf("lastDisconnect = %q", mgr.lastDisconnect)
+	}
+	rec, _ = doJSON(t, srv, http.MethodDelete, "/api/wifi/connect?interface=bad", "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("failed disconnect code = %d", rec.Code)
 	}
 }
 

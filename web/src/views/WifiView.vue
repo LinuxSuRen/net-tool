@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { scanWifi, connectWifi, getInterfaces } from '../api'
+import { scanWifi, connectWifi, disconnectWifi, getInterfaces } from '../api'
 
 const props = defineProps({
   capabilities: { type: Object, default: null }
@@ -17,16 +17,31 @@ const dialogVisible = ref(false)
 const target = ref(null)
 const password = ref('')
 const connecting = ref(false)
+const disconnectingSSID = ref('')
 
 const scanSupported = computed(() => !props.capabilities || props.capabilities.wifi_scan !== false)
 
-// 连接时使用的无线网卡名：优先已关联网络的无线网卡，取不到则为空
-const wifiInterfaceName = computed(() => {
-  const wifiList = interfaces.value.filter(item => item.type === 'wifi')
-  const active = wifiList.find(item => item.ssid)
-  if (active) return active.name
-  return wifiList.length > 0 ? wifiList[0].name : ''
-})
+// 已关联的无线网卡：只认真正带有 SSID 的接口
+const activeWifiInterface = computed(() =>
+  interfaces.value.find(item => item.type === 'wifi' && item.ssid) || null
+)
+
+// 传给后端的网卡名：已关联时复用该网卡，未关联时留空让系统自动选择。
+// 不能随便取第一块 wifi 接口——虚拟/禁用网卡也可能出现在列表里。
+const wifiInterfaceName = computed(() => activeWifiInterface.value?.name || '')
+
+// 仅用于界面展示：未关联时显示一块物理无线网卡
+const displayWifiInterface = computed(() =>
+  wifiInterfaceName.value ||
+  interfaces.value.find(item => item.type === 'wifi' && item.hardware_addr)?.name ||
+  ''
+)
+
+const currentSSID = computed(() => activeWifiInterface.value?.ssid || '')
+
+function isCurrent(row) {
+  return !!row.current || (!!currentSSID.value && row.ssid === currentSSID.value)
+}
 
 async function scan() {
   if (!scanSupported.value) return
@@ -62,6 +77,11 @@ function openConnect(row) {
   dialogVisible.value = true
 }
 
+async function refreshAfterChange() {
+  await loadInterfaces()
+  await scan()
+}
+
 async function handleConnect() {
   if (!target.value) return
   connecting.value = true
@@ -73,11 +93,33 @@ async function handleConnect() {
     })
     ElMessage.success('连接成功')
     dialogVisible.value = false
-    await scan()
+    await refreshAfterChange()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
     connecting.value = false
+  }
+}
+
+async function handleDisconnect(row) {
+  try {
+    await ElMessageBox.confirm(`确定要断开 Wi-Fi「${row.ssid}」吗？`, '断开 Wi-Fi', {
+      type: 'warning',
+      confirmButtonText: '断开',
+      cancelButtonText: '取消'
+    })
+  } catch (e) {
+    return // 用户取消
+  }
+  disconnectingSSID.value = row.ssid
+  try {
+    await disconnectWifi(wifiInterfaceName.value)
+    ElMessage.success('已断开 Wi-Fi')
+    await refreshAfterChange()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    disconnectingSSID.value = ''
   }
 }
 
@@ -95,7 +137,7 @@ onMounted(() => {
         <p class="block__desc">扫描附近的无线网络并选择一个连接</p>
       </div>
       <div class="block__actions">
-        <span v-if="wifiInterfaceName" class="mono wifi-iface">网卡 {{ wifiInterfaceName }}</span>
+        <span v-if="displayWifiInterface" class="mono wifi-iface">网卡 {{ displayWifiInterface }}</span>
         <el-button :icon="Refresh" :loading="loading" :disabled="!scanSupported" @click="scan">刷新</el-button>
       </div>
     </div>
@@ -142,13 +184,20 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="当前" width="80">
         <template #default="{ row }">
-          <el-tag v-if="row.current" type="success" size="small">当前</el-tag>
+          <el-tag v-if="isCurrent(row)" type="success" size="small">当前</el-tag>
           <span v-else class="text-dim">—</span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="80" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" @click="openConnect(row)">连接</el-button>
+          <el-button
+            v-if="isCurrent(row)"
+            link
+            type="danger"
+            :loading="disconnectingSSID === row.ssid"
+            @click="handleDisconnect(row)"
+          >断开</el-button>
+          <el-button v-else link type="primary" @click="openConnect(row)">连接</el-button>
         </template>
       </el-table-column>
     </el-table>

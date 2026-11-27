@@ -111,3 +111,96 @@ func TestConnectWifiDrySkipsVerification(t *testing.T) {
 		t.Errorf("dry commands = %v", dry.Commands)
 	}
 }
+
+func TestDisconnectWifiVerifiesDisassociation(t *testing.T) {
+	query := wlanQueryRunner(func(n int) string {
+		if n == 1 {
+			return associatedOut
+		}
+		return notAssociatedOut
+	})
+	var commands []string
+	mutate := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		commands = append(commands, strings.Join(args, " "))
+		return "", nil
+	})
+	mgr := &windowsManager{query: query, mutate: mutate,
+		joinTimeout: time.Second, joinPoll: time.Millisecond}
+	if err := mgr.DisconnectWifi("WLAN"); err != nil {
+		t.Fatalf("disconnect: %v", err)
+	}
+	if len(commands) != 1 || !strings.Contains(commands[0], "wlan disconnect interface=WLAN") {
+		t.Errorf("disconnect commands = %v", commands)
+	}
+}
+
+func TestDisconnectWifiFailsWhenStillAssociated(t *testing.T) {
+	mgr := &windowsManager{
+		query:       wlanQueryRunner(func(int) string { return associatedOut }),
+		mutate:      wlanFakeRunner(func(string, ...string) (string, error) { return "", nil }),
+		joinTimeout: 10 * time.Millisecond, joinPoll: time.Millisecond,
+	}
+	err := mgr.DisconnectWifi("")
+	if err == nil || !strings.Contains(err.Error(), "did not disconnect") {
+		t.Errorf("expected an honest disconnect failure, got %v", err)
+	}
+}
+
+func TestDisconnectWifiDrySkipsVerification(t *testing.T) {
+	dry := &DryRunner{}
+	mgr := &windowsManager{mutate: dry}
+	if err := mgr.DisconnectWifi("WLAN"); err != nil {
+		t.Fatalf("dry disconnect: %v", err)
+	}
+	if len(dry.Commands) != 1 || !strings.Contains(dry.Commands[0], "wlan disconnect") {
+		t.Errorf("dry commands = %v", dry.Commands)
+	}
+}
+
+func TestInterfacesForcesUTF8PowerShellOutput(t *testing.T) {
+	var psCommand string
+	query := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		full := strings.Join(args, " ")
+		if strings.Contains(full, "Get-NetAdapter") {
+			psCommand = full
+			return `[]`, nil
+		}
+		if strings.Contains(full, "show interfaces") {
+			return notAssociatedOut, nil
+		}
+		return "", newError(CodeCommandFailed, "unexpected query: %s", full)
+	})
+	mgr := &windowsManager{query: query}
+	if _, err := mgr.Interfaces(); err != nil {
+		t.Fatalf("interfaces: %v", err)
+	}
+	if !strings.Contains(psCommand, "[Console]::OutputEncoding") ||
+		!strings.Contains(psCommand, "UTF8Encoding") {
+		t.Errorf("PowerShell command does not force UTF-8 output: %q", psCommand)
+	}
+}
+
+func TestInterfacesMarksOnlyActiveWiFiAsConnected(t *testing.T) {
+	const psOut = `[{"name":"WLAN 3","type":"wifi","up":false},` +
+		`{"name":"WLAN","type":"wifi","up":true,"hardware_addr":"AA-BB-CC-DD-EE-FF"}]`
+	query := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		full := strings.Join(args, " ")
+		switch {
+		case strings.Contains(full, "Get-NetAdapter"):
+			return psOut, nil
+		case strings.Contains(full, "show interfaces"):
+			return associatedOut, nil
+		}
+		return "", newError(CodeCommandFailed, "unexpected query: %s", full)
+	})
+	ifaces, err := (&windowsManager{query: query}).Interfaces()
+	if err != nil {
+		t.Fatalf("interfaces: %v", err)
+	}
+	if ifaces[0].SSID != "" {
+		t.Errorf("disabled virtual adapter got current SSID: %q", ifaces[0].SSID)
+	}
+	if ifaces[1].SSID != "M1-68B091" {
+		t.Errorf("active adapter SSID = %q", ifaces[1].SSID)
+	}
+}

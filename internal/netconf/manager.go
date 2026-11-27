@@ -51,6 +51,9 @@ type Manager interface {
 	ScanWifi() ([]WifiNetwork, error)
 	// ConnectWifi joins ssid using password; iface is Interface.Name or "".
 	ConnectWifi(iface, ssid, password string) error
+	// DisconnectWifi leaves the currently joined wireless network; iface is
+	// Interface.Name or "" for the platform default.
+	DisconnectWifi(iface string) error
 	// StartWifiAP brings up a Wi-Fi hotspot (AP mode): ssid is the network
 	// name, password the WPA2 pre-shared key (empty for an open network);
 	// iface is Interface.Name or "" for the platform's Wi-Fi interface.

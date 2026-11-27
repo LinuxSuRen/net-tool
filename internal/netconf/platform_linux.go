@@ -289,6 +289,29 @@ func (m *linuxManager) ConnectWifi(iface, ssid, password string) error {
 	return err
 }
 
+func (m *linuxManager) DisconnectWifi(iface string) error {
+	if !m.hasNM {
+		return newError(CodeUnsupported, "NetworkManager (nmcli) not found; disconnecting Wi-Fi is unavailable")
+	}
+	if iface == "" {
+		out, err := m.query.Run("nmcli", "-t", "-e", "no",
+			"-f", "GENERAL.DEVICE,GENERAL.TYPE,GENERAL.STATE", "device", "show")
+		if err != nil {
+			return err
+		}
+		for _, dev := range parseNMDeviceShow(out) {
+			if linuxClassify(dev.Type) == "wifi" && strings.Contains(dev.State, "connected") {
+				iface = dev.Device
+				break
+			}
+		}
+	}
+	if iface == "" {
+		return newError(CodeNotFound, "no connected Wi-Fi device found")
+	}
+	return errNil(m.mutate.Run("nmcli", "device", "disconnect", iface))
+}
+
 // apConnectionName is the NetworkManager connection net-tool owns for hotspots.
 func apConnectionName(opts WifiAPOptions) string {
 	if opts.ConnName != "" {

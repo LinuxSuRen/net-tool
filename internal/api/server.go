@@ -45,6 +45,7 @@ func (s *Server) routes(webFS fs.FS) {
 	m.HandleFunc("POST /api/interfaces/{name}/dns", s.handleSetDNS)
 	m.HandleFunc("GET /api/wifi", s.handleWifiScan)
 	m.HandleFunc("POST /api/wifi/connect", s.handleWifiConnect)
+	m.HandleFunc("DELETE /api/wifi/connect", s.handleWifiDisconnect)
 	m.HandleFunc("POST /api/wifi/ap", s.handleWifiAPStart)
 	m.HandleFunc("DELETE /api/wifi/ap", s.handleWifiAPStop)
 	m.HandleFunc("GET /api/hosts", s.handleHostsList)
@@ -147,6 +148,14 @@ func (s *Server) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.mgr.ConnectWifi(body.Interface, body.SSID, body.Password); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeData(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleWifiDisconnect(w http.ResponseWriter, r *http.Request) {
+	if err := s.mgr.DisconnectWifi(r.URL.Query().Get("interface")); err != nil {
 		writeError(w, err)
 		return
 	}

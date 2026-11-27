@@ -74,6 +74,28 @@ var wifiConnectCmd = &cobra.Command{
 }
 
 var (
+	wifiDisconnectIface string
+	wifiDisconnectDry   bool
+)
+
+var wifiDisconnectCmd = &cobra.Command{
+	Use:   "disconnect",
+	Short: "Disconnect from the current Wi-Fi network",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		mgr := newManager(wifiDisconnectDry)
+		if err := mgr.DisconnectWifi(wifiDisconnectIface); err != nil {
+			return exitErr(cmd, err)
+		}
+		if wifiDisconnectDry {
+			reportDry(mgr)
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "disconnected from Wi-Fi")
+		return nil
+	},
+}
+
+var (
 	wifiAPIface    string
 	wifiAPPassword string
 	wifiAPChannel  int
@@ -167,6 +189,11 @@ func init() {
 	f.StringVar(&wifiConnectPassword, "password", "", "pre-shared key (prompted when omitted)")
 	f.BoolVar(&wifiConnectDry, "dry-run", false, "print the system commands instead of running them")
 	wifiCmd.AddCommand(wifiConnectCmd)
+
+	df := wifiDisconnectCmd.Flags()
+	df.StringVar(&wifiDisconnectIface, "iface", "", "interface to disconnect (defaults to the connected Wi-Fi interface)")
+	df.BoolVar(&wifiDisconnectDry, "dry-run", false, "print the system commands instead of running them")
+	wifiCmd.AddCommand(wifiDisconnectCmd)
 
 	sf := wifiAPStartCmd.Flags()
 	sf.StringVar(&wifiAPIface, "iface", "", "interface to use (defaults to the platform's Wi-Fi interface)")

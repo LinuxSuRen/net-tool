@@ -267,6 +267,34 @@ func (m *darwinManager) ConnectWifi(iface, ssid, password string) error {
 	return err
 }
 
+func (m *darwinManager) DisconnectWifi(iface string) error {
+	if iface == "" {
+		service, err := m.defaultWifiService()
+		if err != nil {
+			return err
+		}
+		iface = service
+	}
+	if err := m.requireService(iface); err != nil {
+		return err
+	}
+	// airport -z disassociates without forgetting the network; fall back to
+	// removing the preferred network when the deprecated tool is gone.
+	if path := airportPath(); path != "" {
+		return errNil(m.mutate.Run(path, "-z"))
+	}
+	out, err := m.query.Run("networksetup", "-getairportnetwork", iface)
+	if err != nil {
+		return err
+	}
+	_, ssid, ok := strings.Cut(out, ":")
+	if !ok || strings.TrimSpace(ssid) == "" {
+		return newError(CodeNotFound, "no connected Wi-Fi network found")
+	}
+	return errNil(m.mutate.Run("networksetup", "-removepreferredwirelessnetwork",
+		iface, strings.TrimSpace(ssid)))
+}
+
 // StartWifiAP is not implemented on macOS: Internet Sharing has no stable
 // CLI to drive (it is configured through the Sharing preference pane or
 // private frameworks). The capability reports false accordingly.

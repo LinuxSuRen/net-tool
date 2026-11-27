@@ -109,6 +109,11 @@ export function connectWifi({ interface: iface, ssid, password }) {
   })
 }
 
+export function disconnectWifi(iface) {
+  const query = iface ? `?interface=${encodeURIComponent(iface)}` : ''
+  return request(`/api/wifi/connect${query}`, { method: 'DELETE' })
+}
+
 export function listHosts() {
   return request('/api/hosts')
 }

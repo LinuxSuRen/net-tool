@@ -54,6 +54,16 @@ func (m *windowsManager) Capabilities() Capabilities {
 	return Capabilities{SetIP: true, SetDNS: true, WifiScan: true, WifiJoin: true, Proxy: true, Hosts: true}
 }
 
+// psUTF8 forces Windows PowerShell 5.1 to write UTF-8 to a redirected
+// stdout. By default it uses the system ANSI code page (GBK on Chinese
+// Windows), which Go then reads as UTF-8 and displays as mojibake.
+const psUTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+
+// psArgs builds the common PowerShell flags with UTF-8 output enabled.
+func psArgs(script string) []string {
+	return []string{"-NoProfile", "-NonInteractive", "-Command", psUTF8 + script}
+}
+
 // psInterfacesScript builds one PowerShell invocation returning all
 // adapters with addresses, routes and DNS as JSON.
 const psInterfacesScript = `$ErrorActionPreference='SilentlyContinue'
@@ -80,7 +90,7 @@ Get-NetAdapter | ForEach-Object {
 ConvertTo-Json -InputObject @($out) -Depth 6`
 
 func (m *windowsManager) Interfaces() ([]Interface, error) {
-	out, err := m.query.Run("powershell", "-NoProfile", "-NonInteractive", "-Command", psInterfacesScript)
+	out, err := m.query.Run("powershell", psArgs(psInterfacesScript)...)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +100,9 @@ func (m *windowsManager) Interfaces() ([]Interface, error) {
 	}
 	current := m.currentSSID()
 	for i := range ifaces {
-		if ifaces[i].Type == "wifi" && current != "" {
+		// Windows exposes virtual/disabled Wi-Fi adapters too; only the
+		// adapter that is actually up owns the current association.
+		if ifaces[i].Type == "wifi" && ifaces[i].Up && current != "" {
 			ifaces[i].SSID = current
 		}
 	}
@@ -202,9 +214,10 @@ func (m *windowsManager) wifiSecurity(ssid string) string {
 	return ""
 }
 
-// waitForWlanJoin checks the real adapter state after `netsh wlan connect`,
-// which reports success even when authentication or association fails later.
-func (m *windowsManager) waitForWlanJoin(ssid, iface string) (string, error) {
+// waitForWlanState polls the real adapter state until it reports want (an
+// SSID when joining, "" when disconnecting). netsh reports success as soon as
+// a request is accepted, so the exit code alone proves nothing.
+func (m *windowsManager) waitForWlanState(iface, want string) error {
 	args := []string{"wlan", "show", "interfaces"}
 	if iface != "" {
 		args = append(args, "name="+iface)
@@ -216,13 +229,14 @@ func (m *windowsManager) waitForWlanJoin(ssid, iface string) (string, error) {
 	if poll <= 0 {
 		poll = defaultJoinPoll
 	}
-	return waitForWlanSSID(func() (string, error) {
+	_, err := waitForWlanSSID(func() (string, error) {
 		out, err := m.query.Run("netsh", args...)
 		if err != nil {
 			return "", err
 		}
 		return parseWlanCurrentSSID(out), nil
-	}, ssid, timeout, poll)
+	}, want, timeout, poll)
+	return err
 }
 
 func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
@@ -264,8 +278,21 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 	if _, dry := m.mutate.(*DryRunner); dry {
 		return nil
 	}
-	_, err = m.waitForWlanJoin(ssid, iface)
-	return err
+	return m.waitForWlanState(iface, ssid)
+}
+
+func (m *windowsManager) DisconnectWifi(iface string) error {
+	args := []string{"wlan", "disconnect"}
+	if iface != "" {
+		args = append(args, "interface="+iface)
+	}
+	if err := errNil(m.mutate.Run("netsh", args...)); err != nil {
+		return err
+	}
+	if _, dry := m.mutate.(*DryRunner); dry {
+		return nil
+	}
+	return m.waitForWlanState(iface, "")
 }
 
 // StartWifiAP is not implemented on Windows: the Mobile Hotspot feature is
@@ -288,8 +315,8 @@ const proxyRegPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Se
 
 func (m *windowsManager) Proxy(iface string) (ProxyConfig, error) {
 	_ = iface // the WinINET proxy is per-user and machine-global
-	out, err := m.query.Run("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-ItemProperty '`+proxyRegPath+`' | Select-Object ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL | ConvertTo-Json`)
+	out, err := m.query.Run("powershell", psArgs(
+		`Get-ItemProperty '`+proxyRegPath+`' | Select-Object ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL | ConvertTo-Json`)...)
 	if err != nil {
 		return ProxyConfig{}, err
 	}
