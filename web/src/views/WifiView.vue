@@ -1,8 +1,10 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
-import { scanWifi, connectWifi, getInterfaces } from '../api'
+import { scanWifi, connectWifi, disconnectWifi, getInterfaces } from '../api'
+import { usePersistentFilter, usePersistentSort } from '../preferences'
+import { sortRows } from '../sorting'
 
 const props = defineProps({
   capabilities: { type: Object, default: null }
@@ -16,17 +18,107 @@ const scanDenied = ref(false)
 const dialogVisible = ref(false)
 const target = ref(null)
 const password = ref('')
+const remember = ref(false)
+const attempts = ref(3)
 const connecting = ref(false)
+const disconnectingSSID = ref('')
+
+const { filter, resetFilter } = usePersistentFilter('wifi', {
+  keyword: '',
+  security: 'all',
+  status: 'all'
+})
+const { sort, onSortChange, resetSort } = usePersistentSort('wifi')
+const tableKey = ref(0)
+
+function resetAll() {
+  resetFilter()
+  resetSort()
+  tableKey.value++ // re-mount so Element Plus picks up the restored default-sort
+}
+
+// 记住密码只保存在当前浏览器，按 SSID 隔离；后端不接收该选项，也不落盘密码。
+const REMEMBER_PREFIX = 'net-tool.wifi.password.'
+
+function passwordKey(ssid) {
+  return REMEMBER_PREFIX + encodeURIComponent(ssid)
+}
+
+function rememberedPassword(ssid) {
+  try {
+    return localStorage.getItem(passwordKey(ssid)) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+function storePassword(ssid, pwd) {
+  try {
+    if (pwd) localStorage.setItem(passwordKey(ssid), pwd)
+    else localStorage.removeItem(passwordKey(ssid))
+  } catch (e) {
+    // 隐私模式下 localStorage 可能不可用：不影响本次连接
+  }
+}
 
 const scanSupported = computed(() => !props.capabilities || props.capabilities.wifi_scan !== false)
 
-// 连接时使用的无线网卡名：优先已关联网络的无线网卡，取不到则为空
-const wifiInterfaceName = computed(() => {
-  const wifiList = interfaces.value.filter(item => item.type === 'wifi')
-  const active = wifiList.find(item => item.ssid)
-  if (active) return active.name
-  return wifiList.length > 0 ? wifiList[0].name : ''
+// 已关联的无线网卡：只认真正带有 SSID 的接口
+const activeWifiInterface = computed(() =>
+  interfaces.value.find(item => item.type === 'wifi' && item.ssid) || null
+)
+
+// 传给后端的网卡名：已关联时复用该网卡，未关联时留空让系统自动选择。
+// 不能随便取第一块 wifi 接口——虚拟/禁用网卡也可能出现在列表里。
+const wifiInterfaceName = computed(() => activeWifiInterface.value?.name || '')
+
+// 仅用于界面展示：未关联时显示一块物理无线网卡
+const displayWifiInterface = computed(() =>
+  wifiInterfaceName.value ||
+  interfaces.value.find(item => item.type === 'wifi' && item.hardware_addr)?.name ||
+  ''
+)
+
+const currentSSID = computed(() => activeWifiInterface.value?.ssid || '')
+
+function isCurrent(row) {
+  return !!row.current || (!!currentSSID.value && row.ssid === currentSSID.value)
+}
+
+// 安全性选项来自本次扫描结果，包含 WPA2/WPA3-Personal 等实际值
+const securityOptions = computed(() =>
+  [...new Set(networks.value.map(row => row.security).filter(Boolean))].sort()
+)
+
+const filteredNetworks = computed(() => {
+  const q = String(filter.keyword || '').trim().toLowerCase()
+  return networks.value.filter(row => {
+    if (q) {
+      const text = [row.ssid, row.security, row.channel]
+        .filter(value => value !== undefined && value !== null)
+        .join(' ').toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    if (filter.security === 'open') {
+      if (row.security) return false
+    } else if (filter.security !== 'all' && row.security !== filter.security) {
+      return false
+    }
+    if (filter.status === 'current' && !isCurrent(row)) return false
+    if (filter.status === 'other' && isCurrent(row)) return false
+    return true
+  })
 })
+
+const sortedNetworks = computed(() => sortRows(filteredNetworks.value, sort, (row, prop) => {
+  switch (prop) {
+    case 'signal': return Number(row.signal || 0)
+    case 'channel': return Number(row.channel || 0)
+    case 'current': return isCurrent(row) ? 1 : 0
+    case 'security': return row.security || ''
+    default: return row.ssid || ''
+  }
+}))
 
 async function scan() {
   if (!scanSupported.value) return
@@ -58,8 +150,16 @@ async function loadInterfaces() {
 
 function openConnect(row) {
   target.value = row
-  password.value = ''
+  const saved = rememberedPassword(row.ssid)
+  password.value = saved
+  remember.value = !!saved
+  attempts.value = 3
   dialogVisible.value = true
+}
+
+async function refreshAfterChange() {
+  await loadInterfaces()
+  await scan()
 }
 
 async function handleConnect() {
@@ -69,15 +169,39 @@ async function handleConnect() {
     await connectWifi({
       interface: wifiInterfaceName.value,
       ssid: target.value.ssid,
-      password: password.value
+      password: password.value,
+      attempts: attempts.value
     })
+    storePassword(target.value.ssid, remember.value ? password.value : '')
     ElMessage.success('连接成功')
     dialogVisible.value = false
-    await scan()
+    await refreshAfterChange()
   } catch (e) {
     ElMessage.error(e.message)
   } finally {
     connecting.value = false
+  }
+}
+
+async function handleDisconnect(row) {
+  try {
+    await ElMessageBox.confirm(`确定要断开 Wi-Fi「${row.ssid}」吗？`, '断开 Wi-Fi', {
+      type: 'warning',
+      confirmButtonText: '断开',
+      cancelButtonText: '取消'
+    })
+  } catch (e) {
+    return // 用户取消
+  }
+  disconnectingSSID.value = row.ssid
+  try {
+    await disconnectWifi(wifiInterfaceName.value)
+    ElMessage.success('已断开 Wi-Fi')
+    await refreshAfterChange()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    disconnectingSSID.value = ''
   }
 }
 
@@ -95,7 +219,7 @@ onMounted(() => {
         <p class="block__desc">扫描附近的无线网络并选择一个连接</p>
       </div>
       <div class="block__actions">
-        <span v-if="wifiInterfaceName" class="mono wifi-iface">网卡 {{ wifiInterfaceName }}</span>
+        <span v-if="displayWifiInterface" class="mono wifi-iface">网卡 {{ displayWifiInterface }}</span>
         <el-button :icon="Refresh" :loading="loading" :disabled="!scanSupported" @click="scan">刷新</el-button>
       </div>
     </div>
@@ -115,43 +239,81 @@ onMounted(() => {
       description="服务端已尝试弹出系统定位授权窗口，请在弹窗中点击允许后重新扫描；若未出现弹窗，请在系统设置的隐私与安全性中为终端 App 开启定位服务后再试。"
     />
 
-    <el-table v-else v-loading="loading" :data="networks" border>
-      <el-table-column label="SSID" min-width="160">
-        <template #default="{ row }">
-          <span class="mono">{{ row.ssid }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="信号" min-width="170">
-        <template #default="{ row }">
-          <div class="wifi-signal">
-            <el-progress :percentage="row.signal || 0" :stroke-width="6" :show-text="false" class="wifi-signal__bar" />
-            <span class="wifi-signal__num">{{ row.signal || 0 }}%</span>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="安全性" min-width="120">
-        <template #default="{ row }">
-          <span v-if="row.security">{{ row.security }}</span>
-          <span v-else class="text-dim">开放</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="信道" width="80">
-        <template #default="{ row }">
-          <span class="mono">{{ row.channel || '—' }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="当前" width="80">
-        <template #default="{ row }">
-          <el-tag v-if="row.current" type="success" size="small">当前</el-tag>
-          <span v-else class="text-dim">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right">
-        <template #default="{ row }">
-          <el-button link type="primary" @click="openConnect(row)">连接</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <template v-else>
+      <div class="filter-bar">
+        <el-input
+          v-model="filter.keyword"
+          class="filter-bar__keyword"
+          placeholder="按 SSID 或安全性过滤"
+          clearable
+        />
+        <el-select v-model="filter.security" class="filter-bar__select">
+          <el-option label="全部安全性" value="all" />
+          <el-option label="开放" value="open" />
+          <el-option v-for="sec in securityOptions" :key="sec" :label="sec" :value="sec" />
+        </el-select>
+        <el-select v-model="filter.status" class="filter-bar__select">
+          <el-option label="全部状态" value="all" />
+          <el-option label="当前连接" value="current" />
+          <el-option label="其他网络" value="other" />
+        </el-select>
+        <span class="filter-bar__count">{{ filteredNetworks.length }} / {{ networks.length }}</span>
+        <el-button class="filter-bar__reset" link @click="resetAll">重置</el-button>
+      </div>
+
+      <el-table
+        :key="tableKey"
+        v-loading="loading"
+        :data="sortedNetworks"
+        :default-sort="sort"
+        border
+        empty-text="没有匹配的网络"
+        @sort-change="onSortChange"
+      >
+        <el-table-column label="SSID" prop="ssid" min-width="160" sortable="custom">
+          <template #default="{ row }">
+            <span class="mono">{{ row.ssid }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="信号" prop="signal" min-width="170" sortable="custom">
+          <template #default="{ row }">
+            <div class="wifi-signal">
+              <el-progress :percentage="row.signal || 0" :stroke-width="6" :show-text="false" class="wifi-signal__bar" />
+              <span class="wifi-signal__num">{{ row.signal || 0 }}%</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="安全性" prop="security" min-width="120" sortable="custom">
+          <template #default="{ row }">
+            <span v-if="row.security">{{ row.security }}</span>
+            <span v-else class="text-dim">开放</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="信道" prop="channel" width="80" sortable="custom">
+          <template #default="{ row }">
+            <span class="mono">{{ row.channel || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前" prop="current" width="80" sortable="custom">
+          <template #default="{ row }">
+            <el-tag v-if="isCurrent(row)" type="success" size="small">当前</el-tag>
+            <span v-else class="text-dim">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="isCurrent(row)"
+              link
+              type="danger"
+              :loading="disconnectingSSID === row.ssid"
+              @click="handleDisconnect(row)"
+            >断开</el-button>
+            <el-button v-else link type="primary" @click="openConnect(row)">连接</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </template>
 
     <el-dialog
       :model-value="dialogVisible"
@@ -169,6 +331,16 @@ onMounted(() => {
             placeholder="开放网络无需填写密码"
           />
         </el-form-item>
+        <el-form-item label="记住密码">
+          <div class="wifi-options">
+            <el-checkbox v-model="remember">记住密码</el-checkbox>
+            <span class="text-dim">仅保存在当前浏览器</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="重试次数">
+          <el-input-number v-model="attempts" :min="1" :max="5" size="small" />
+          <span class="text-dim wifi-options__hint">失败后自动重新关联</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -182,6 +354,18 @@ onMounted(() => {
 .wifi-iface {
   font-size: 13px;
   color: var(--color-text-dim);
+}
+
+.wifi-options {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.wifi-options__hint {
+  margin-left: var(--space-2);
+  font-size: 12px;
 }
 
 .wifi-signal {

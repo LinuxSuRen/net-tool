@@ -3,7 +3,49 @@ package netconf
 import (
 	"errors"
 	"fmt"
+	"time"
 )
+
+// Wi-Fi association is asynchronous and can fail transiently (the AP is busy
+// or still rejecting the previous attempt), so one join request may need a
+// few tries before it really completes.
+const (
+	DefaultWifiAttempts = 3
+	MaxWifiAttempts     = 5
+)
+
+// NormalizeWifiAttempts clamps an untrusted attempt count to a sane range;
+// zero and negatives mean "use the default".
+func NormalizeWifiAttempts(n int) int {
+	if n <= 0 {
+		return DefaultWifiAttempts
+	}
+	if n > MaxWifiAttempts {
+		return MaxWifiAttempts
+	}
+	return n
+}
+
+// retryWifi calls fn until it succeeds or the attempt budget is exhausted.
+// The final error keeps its stable code through %w.
+func retryWifi(attempts int, delay time.Duration, fn func(attempt int) error) error {
+	for i := 1; i <= attempts; i++ {
+		err := fn(i)
+		if err == nil {
+			return nil
+		}
+		if i == attempts {
+			if attempts > 1 {
+				return fmt.Errorf("%w (after %d attempts)", err, attempts)
+			}
+			return err
+		}
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+	return nil // unreachable; attempts is always >= 1
+}
 
 // Stable error codes surfaced to the API/CLI; user-visible wording is
 // decided by the frontend, technical detail stays in the message for logs.
@@ -49,8 +91,12 @@ type Manager interface {
 	SetDNS(name string, cfg DNSConfig) error
 	// ScanWifi lists visible wireless networks.
 	ScanWifi() ([]WifiNetwork, error)
-	// ConnectWifi joins ssid using password; iface is Interface.Name or "".
-	ConnectWifi(iface, ssid, password string) error
+	// ConnectWifi joins ssid; iface is Interface.Name or "". opts controls
+	// the password and how many times to retry a failed association.
+	ConnectWifi(iface, ssid string, opts WifiConnectOptions) error
+	// DisconnectWifi leaves the currently joined wireless network; iface is
+	// Interface.Name or "" for the platform default.
+	DisconnectWifi(iface string) error
 	// StartWifiAP brings up a Wi-Fi hotspot (AP mode): ssid is the network
 	// name, password the WPA2 pre-shared key (empty for an open network);
 	// iface is Interface.Name or "" for the platform's Wi-Fi interface.

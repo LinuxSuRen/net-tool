@@ -1,14 +1,57 @@
 <script setup>
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { listHosts, addHost, removeHost } from '../api'
+import { usePersistentFilter, usePersistentSort } from '../preferences'
+import { sortRows } from '../sorting'
 
 const entries = ref([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const saving = ref(false)
 const formRef = ref(null)
+
+const { filter, resetFilter } = usePersistentFilter('hosts', {
+  keyword: '',
+  type: 'all',
+  status: 'all'
+})
+const { sort, onSortChange, resetSort } = usePersistentSort('hosts')
+const tableKey = ref(0)
+
+function resetAll() {
+  resetFilter()
+  resetSort()
+  tableKey.value++
+}
+
+// hosts 条目没有独立的“状态/类型”字段：这里按 IP 版本分类，并把是否由
+// net-tool 管理作为可过滤的状态（系统条目不可删除）。
+function ipVersion(ip) {
+  return String(ip || '').includes(':') ? 'ipv6' : 'ipv4'
+}
+
+const filteredEntries = computed(() => {
+  const q = String(filter.keyword || '').trim().toLowerCase()
+  return entries.value.filter(row => {
+    if (q) {
+      const text = [row.ip, ...(row.hostnames || [])].filter(Boolean).join(' ').toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    if (filter.type !== 'all' && ipVersion(row.ip) !== filter.type) return false
+    if (filter.status !== 'all' && !!row.managed !== (filter.status === 'managed')) return false
+    return true
+  })
+})
+
+const sortedEntries = computed(() => sortRows(filteredEntries.value, sort, (row, prop) => {
+  switch (prop) {
+    case 'hostnames': return (row.hostnames || []).join(' ')
+    case 'managed': return row.managed ? 1 : 0
+    default: return row.ip || ''
+  }
+}))
 
 const form = reactive({
   ip: '',
@@ -110,18 +153,47 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="entries" border>
-      <el-table-column label="IP 地址" min-width="140">
+    <div class="filter-bar">
+      <el-input
+        v-model="filter.keyword"
+        class="filter-bar__keyword"
+        placeholder="按 IP 或域名过滤"
+        clearable
+      />
+      <el-select v-model="filter.type" class="filter-bar__select">
+        <el-option label="全部类型" value="all" />
+        <el-option label="IPv4" value="ipv4" />
+        <el-option label="IPv6" value="ipv6" />
+      </el-select>
+      <el-select v-model="filter.status" class="filter-bar__select">
+        <el-option label="全部状态" value="all" />
+        <el-option label="net-tool 管理" value="managed" />
+        <el-option label="系统" value="system" />
+      </el-select>
+      <span class="filter-bar__count">{{ filteredEntries.length }} / {{ entries.length }}</span>
+      <el-button class="filter-bar__reset" link @click="resetAll">重置</el-button>
+    </div>
+
+    <el-table
+      :key="tableKey"
+      v-loading="loading"
+      :data="sortedEntries"
+      :default-sort="sort"
+      border
+      empty-text="没有匹配的记录"
+      @sort-change="onSortChange"
+    >
+      <el-table-column label="IP 地址" prop="ip" min-width="140" sortable="custom">
         <template #default="{ row }">
           <span class="mono">{{ row.ip }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="域名" min-width="200">
+      <el-table-column label="域名" prop="hostnames" min-width="200" sortable="custom">
         <template #default="{ row }">
           <span>{{ (row.hostnames || []).join(' ') }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="来源" width="120">
+      <el-table-column label="来源" prop="managed" width="120" sortable="custom">
         <template #default="{ row }">
           <el-tag :type="row.managed ? 'success' : 'info'" size="small">
             {{ row.managed ? 'net-tool 管理' : '系统' }}

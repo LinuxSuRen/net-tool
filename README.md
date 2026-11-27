@@ -82,7 +82,16 @@ Wi-Fi:
 ```bash
 net-tool wifi list
 net-tool wifi connect "HomeNet"              # password prompt (input hidden)
+net-tool wifi connect "HomeNet" --attempts 5 # retry a failed association up to 5 times
+net-tool wifi disconnect                     # leave the current network
 ```
+
+On Windows, net-tool detects WPA3-Personal networks (SAE with transition mode)
+from the scan and waits until the adapter is really associated before reporting
+success — `netsh wlan connect` alone returns success even when authentication
+fails. A failed join is retried up to `--attempts` times (default 3); the API
+accepts the same `attempts` field. The Web UI can remember a password per SSID
+in the browser's `localStorage`; it is never sent to or stored by the server.
 
 Wi-Fi hotspot (AP mode, Linux via NetworkManager; macOS/Windows report
 `unsupported` for now):
@@ -127,7 +136,7 @@ sudo net-tool serve
 # net-tool web UI: http://127.0.0.1:8190
 ```
 
-The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan & connect), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
+The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan, connect and disconnect the current network), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The selected tab, each list's name/type/status filters and the chosen sort column/direction are kept in the browser's `localStorage` and restored after a reload; use 重置 to clear a view's filters and sorting. Wi-Fi scanning retries briefly if Windows reports only the currently connected network right after a join, so the full list stays visible. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). If port `8190` is already taken, the next free consecutive port is tried automatically (up to 100) and the actual URL is printed; pass `--no-drift` to fail on a conflict instead. The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
 
 ## Development
 

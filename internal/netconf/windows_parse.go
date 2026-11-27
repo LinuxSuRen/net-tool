@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Parsers for Windows PowerShell JSON, `netsh wlan` output and the proxy
@@ -148,6 +149,39 @@ func parseWlanCurrentSSID(out string) string {
 	return ""
 }
 
+// waitForWlanSSID polls read until it reports ssid or timeout elapses. read
+// returns the SSID of the associated adapter ("" when disconnected) and any
+// query error; transient query failures are retried. It returns the last
+// observed SSID so callers can include it in an error message.
+func waitForWlanSSID(read func() (string, error), ssid string, timeout, interval time.Duration) (string, error) {
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	var last string
+	for {
+		got, err := read()
+		if err == nil {
+			last = got
+			if got == ssid {
+				return got, nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			if err != nil {
+				return last, err
+			}
+			if ssid == "" {
+				return last, newError(CodeCommandFailed,
+					"Wi-Fi did not disconnect (current SSID: %q)", last)
+			}
+			return last, newError(CodeCommandFailed,
+				"Wi-Fi association with %q did not complete (current SSID: %q)", ssid, last)
+		}
+		time.Sleep(interval)
+	}
+}
+
 // psProxy mirrors the registry proxy blob read via Get-ItemProperty.
 type psProxy struct {
 	ProxyEnable   int    `json:"ProxyEnable"`
@@ -233,15 +267,35 @@ var xmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`
 // wlanProfileXML builds a WLAN profile for WPA2-Personal (AES) or open
 // networks; SSID and password are XML-escaped.
 func wlanProfileXML(ssid, password string) (string, error) {
+	return wlanProfileXMLFor(ssid, password, "")
+}
+
+// isWPA3Personal reports whether a scanned security label denotes
+// WPA3-Personal (SAE). Enterprise variants need a different profile.
+func isWPA3Personal(security string) bool {
+	s := strings.ToLower(security)
+	return strings.Contains(s, "wpa3") && !strings.Contains(s, "enterprise")
+}
+
+// wlanProfileXMLFor builds a WLAN profile for the security advertised by a
+// scan (e.g. "WPA3-Personal", "WPA2-Personal" or "Open"). WPA3-Personal must
+// use WPA3SAE with transition mode: a WPA2PSK profile is accepted by
+// `netsh wlan connect` but never associates with a WPA3-only network.
+func wlanProfileXMLFor(ssid, password, security string) (string, error) {
 	if ssid == "" {
 		return "", newError(CodeInvalidArgument, "ssid is empty")
 	}
 	if len(ssid) > 32 {
 		return "", newError(CodeInvalidArgument, "ssid longer than 32 bytes")
 	}
-	auth, enc, shared := "open", "none", ""
+	auth, enc, shared, transition := "open", "none", "", ""
 	if password != "" {
-		auth, enc = "WPA2PSK", "AES"
+		if isWPA3Personal(security) {
+			auth, enc = "WPA3SAE", "AES"
+			transition = `<transitionMode xmlns="http://www.microsoft.com/networking/WLAN/profile/v4">true</transitionMode>`
+		} else {
+			auth, enc = "WPA2PSK", "AES"
+		}
 		shared = `<sharedKey><keyType>passPhrase</keyType><protected>false</protected><keyMaterial>` +
 			xmlEscaper.Replace(password) + `</keyMaterial></sharedKey>`
 	}
@@ -252,9 +306,9 @@ func wlanProfileXML(ssid, password string) (string, error) {
 	<connectionType>ESS</connectionType>
 	<connectionMode>auto</connectionMode>
 	<MSM><security>
-		<authEncryption><authentication>%s</authentication><encryption>%s</encryption><useOneX>false</useOneX></authEncryption>
+		<authEncryption><authentication>%s</authentication><encryption>%s</encryption><useOneX>false</useOneX>%s</authEncryption>
 		%s
 	</security></MSM>
 </WLANProfile>
-`, xmlEscaper.Replace(ssid), xmlEscaper.Replace(ssid), auth, enc, shared), nil
+`, xmlEscaper.Replace(ssid), xmlEscaper.Replace(ssid), auth, enc, transition, shared), nil
 }

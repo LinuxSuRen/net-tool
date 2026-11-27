@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // windowsManager implements Manager on top of PowerShell (Get-Net* read),
@@ -14,17 +15,40 @@ import (
 // subcommand keywords are English regardless of UI locale; only output is
 // localized, which is why reads go through PowerShell JSON.
 type windowsManager struct {
-	query  Runner
-	mutate Runner
+	query       Runner
+	mutate      Runner
+	joinTimeout time.Duration
+	joinPoll    time.Duration
+	retryDelay  time.Duration
+	scanTries   int
+	scanDelay   time.Duration
+	scanTrigger func() error
 }
 
+// netsh wlan connect returns as soon as the request is accepted; association
+// happens asynchronously, so a successful exit code alone is not proof that
+// the SSID was joined.
+const (
+	defaultJoinTimeout = 15 * time.Second
+	defaultJoinPoll    = 500 * time.Millisecond
+	defaultRetryDelay  = time.Second
+	defaultScanTries   = 3
+	defaultScanDelay   = 700 * time.Millisecond
+)
+
 // NewManager returns the Windows backend.
-func NewManager() Manager { return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{}} }
+func NewManager() Manager {
+	return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{},
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay,
+		scanTries: defaultScanTries, scanDelay: defaultScanDelay, scanTrigger: triggerWlanScan}
+}
 
 // NewDryManager returns the Windows backend recording mutations instead of
 // running them.
 func NewDryManager() Manager {
-	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{}}
+	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{},
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay,
+		scanTries: defaultScanTries, scanDelay: defaultScanDelay, scanTrigger: triggerWlanScan}
 }
 
 // DryCommands returns the recorded mutations (used by the CLI dry run).
@@ -37,6 +61,16 @@ func (m *windowsManager) DryCommands() []string {
 
 func (m *windowsManager) Capabilities() Capabilities {
 	return Capabilities{SetIP: true, SetDNS: true, WifiScan: true, WifiJoin: true, Proxy: true, Hosts: true}
+}
+
+// psUTF8 forces Windows PowerShell 5.1 to write UTF-8 to a redirected
+// stdout. By default it uses the system ANSI code page (GBK on Chinese
+// Windows), which Go then reads as UTF-8 and displays as mojibake.
+const psUTF8 = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+
+// psArgs builds the common PowerShell flags with UTF-8 output enabled.
+func psArgs(script string) []string {
+	return []string{"-NoProfile", "-NonInteractive", "-Command", psUTF8 + script}
 }
 
 // psInterfacesScript builds one PowerShell invocation returning all
@@ -65,7 +99,7 @@ Get-NetAdapter | ForEach-Object {
 ConvertTo-Json -InputObject @($out) -Depth 6`
 
 func (m *windowsManager) Interfaces() ([]Interface, error) {
-	out, err := m.query.Run("powershell", "-NoProfile", "-NonInteractive", "-Command", psInterfacesScript)
+	out, err := m.query.Run("powershell", psArgs(psInterfacesScript)...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +109,9 @@ func (m *windowsManager) Interfaces() ([]Interface, error) {
 	}
 	current := m.currentSSID()
 	for i := range ifaces {
-		if ifaces[i].Type == "wifi" && current != "" {
+		// Windows exposes virtual/disabled Wi-Fi adapters too; only the
+		// adapter that is actually up owns the current association.
+		if ifaces[i].Type == "wifi" && ifaces[i].Up && current != "" {
 			ifaces[i].SSID = current
 		}
 	}
@@ -161,20 +197,91 @@ func (m *windowsManager) SetDNS(name string, cfg DNSConfig) error {
 	return nil
 }
 
-func (m *windowsManager) ScanWifi() ([]WifiNetwork, error) {
-	current := m.currentSSID()
-	out, err := m.query.Run("netsh", "wlan", "show", "networks", "mode=bssid")
-	if err != nil {
-		return nil, err
+// scanLooksStale detects the transient reply Windows gives right after a join:
+// only the associated SSID is reported until the visible-network cache
+// refreshes. Showing that as the whole list hides every other network.
+func scanLooksStale(nets []WifiNetwork, current string) bool {
+	if current == "" {
+		return false
 	}
-	return parseWlanNetworks(out, current), nil
+	return len(nets) == 0 || (len(nets) == 1 && nets[0].SSID == current)
 }
 
-func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
+func (m *windowsManager) ScanWifi() ([]WifiNetwork, error) {
+	current := m.currentSSID()
+	tries := m.scanTries
+	if tries <= 0 {
+		tries = 1
+	}
+	var nets []WifiNetwork
+	for i := 0; i < tries; i++ {
+		if m.scanTrigger != nil {
+			// Triggering a fresh scan is best effort: netsh may still return
+			// usable cached results if the native API is unavailable.
+			_ = m.scanTrigger()
+		}
+		if m.scanDelay > 0 {
+			time.Sleep(m.scanDelay)
+		}
+		out, err := m.query.Run("netsh", "wlan", "show", "networks", "mode=bssid")
+		if err != nil {
+			return nil, err
+		}
+		nets = parseWlanNetworks(out, current)
+		if !scanLooksStale(nets, current) || i == tries-1 {
+			break
+		}
+	}
+	return nets, nil
+}
+
+// wifiSecurity returns the security advertised by the scanned network, or ""
+// when it is not visible right now (hidden networks). It is best effort: the
+// association check below still reports an honest failure if the guess is
+// wrong.
+func (m *windowsManager) wifiSecurity(ssid string) string {
+	nets, err := m.ScanWifi()
+	if err != nil {
+		return ""
+	}
+	for _, net := range nets {
+		if net.SSID == ssid {
+			return net.Security
+		}
+	}
+	return ""
+}
+
+// waitForWlanState polls the real adapter state until it reports want (an
+// SSID when joining, "" when disconnecting). netsh reports success as soon as
+// a request is accepted, so the exit code alone proves nothing.
+func (m *windowsManager) waitForWlanState(iface, want string) error {
+	args := []string{"wlan", "show", "interfaces"}
+	if iface != "" {
+		args = append(args, "name="+iface)
+	}
+	timeout, poll := m.joinTimeout, m.joinPoll
+	if timeout <= 0 {
+		timeout = defaultJoinTimeout
+	}
+	if poll <= 0 {
+		poll = defaultJoinPoll
+	}
+	_, err := waitForWlanSSID(func() (string, error) {
+		out, err := m.query.Run("netsh", args...)
+		if err != nil {
+			return "", err
+		}
+		return parseWlanCurrentSSID(out), nil
+	}, want, timeout, poll)
+	return err
+}
+
+func (m *windowsManager) ConnectWifi(iface, ssid string, opts WifiConnectOptions) error {
 	if !validSSID(ssid) {
 		return newError(CodeInvalidArgument, "invalid SSID %q", ssid)
 	}
-	profile, err := wlanProfileXML(ssid, password)
+	profile, err := wlanProfileXMLFor(ssid, opts.Password, m.wifiSecurity(ssid))
 	if err != nil {
 		return err
 	}
@@ -189,6 +296,10 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 		return newError(CodeCommandFailed, "write temp profile: %v", err)
 	}
 	tmp.Close()
+	// Re-adding a profile over an existing one leaves stale security state
+	// behind: netsh reports success but the following connect never
+	// associates. Delete first; a missing profile is not an error.
+	_, _ = m.mutate.Run("netsh", "wlan", "delete", "profile", "name="+ssid)
 	if _, err := m.mutate.Run("netsh", "wlan", "add", "profile",
 		"filename="+path, "user=all"); err != nil {
 		return err
@@ -197,8 +308,40 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 	if iface != "" {
 		args = append(args, "interface="+iface)
 	}
-	_, err = m.mutate.Run("netsh", args...)
-	return err
+	_, dry := m.mutate.(*DryRunner)
+	attempts := NormalizeWifiAttempts(opts.Attempts)
+	if dry {
+		// A dry run records mutations only; there is nothing to retry.
+		attempts = 1
+	}
+	return retryWifi(attempts, m.retryDelay, func(attempt int) error {
+		if attempt > 1 {
+			// A failed association can leave the adapter stuck in
+			// associating; clear it before issuing the next request.
+			_, _ = m.mutate.Run("netsh", "wlan", "disconnect")
+		}
+		if _, err := m.mutate.Run("netsh", args...); err != nil {
+			return err
+		}
+		if dry {
+			return nil
+		}
+		return m.waitForWlanState(iface, ssid)
+	})
+}
+
+func (m *windowsManager) DisconnectWifi(iface string) error {
+	args := []string{"wlan", "disconnect"}
+	if iface != "" {
+		args = append(args, "interface="+iface)
+	}
+	if err := errNil(m.mutate.Run("netsh", args...)); err != nil {
+		return err
+	}
+	if _, dry := m.mutate.(*DryRunner); dry {
+		return nil
+	}
+	return m.waitForWlanState(iface, "")
 }
 
 // StartWifiAP is not implemented on Windows: the Mobile Hotspot feature is
@@ -221,8 +364,8 @@ const proxyRegPath = `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Se
 
 func (m *windowsManager) Proxy(iface string) (ProxyConfig, error) {
 	_ = iface // the WinINET proxy is per-user and machine-global
-	out, err := m.query.Run("powershell", "-NoProfile", "-NonInteractive", "-Command",
-		`Get-ItemProperty '`+proxyRegPath+`' | Select-Object ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL | ConvertTo-Json`)
+	out, err := m.query.Run("powershell", psArgs(
+		`Get-ItemProperty '`+proxyRegPath+`' | Select-Object ProxyEnable, ProxyServer, ProxyOverride, AutoConfigURL | ConvertTo-Json`)...)
 	if err != nil {
 		return ProxyConfig{}, err
 	}

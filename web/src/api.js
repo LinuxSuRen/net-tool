@@ -29,9 +29,9 @@ export class ApiError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body } = {}) {
+async function request(path, { method = 'GET', body, timeoutMs = TIMEOUT_MS } = {}) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   let resp
   try {
     resp = await fetch(path, {
@@ -102,11 +102,26 @@ export function scanWifi() {
   return request('/api/wifi')
 }
 
-export function connectWifi({ interface: iface, ssid, password }) {
+// A Wi-Fi join can include several association attempts, so give it more
+// time than the default short request timeout.
+const WIFI_CONNECT_TIMEOUT_MS = 90000
+
+export function connectWifi({ interface: iface, ssid, password, attempts }) {
   return request('/api/wifi/connect', {
     method: 'POST',
-    body: { interface: iface || '', ssid, password: password || '' }
+    body: {
+      interface: iface || '',
+      ssid,
+      password: password || '',
+      attempts: attempts || 1
+    },
+    timeoutMs: WIFI_CONNECT_TIMEOUT_MS
   })
+}
+
+export function disconnectWifi(iface) {
+  const query = iface ? `?interface=${encodeURIComponent(iface)}` : ''
+  return request(`/api/wifi/connect${query}`, { method: 'DELETE' })
 }
 
 export function listHosts() {

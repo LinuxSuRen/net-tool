@@ -57,6 +57,13 @@ type WifiNetwork struct {
 }
 
 // WifiAPOptions tunes a hotspot started via StartWifiAP. Zero values keep
+// WifiConnectOptions controls a single Wi-Fi join. Password is empty for an
+// open network; Attempts is the number of association tries (1..5).
+type WifiConnectOptions struct {
+	Password string `json:"password"`
+	Attempts int    `json:"attempts,omitempty"`
+}
+
 // platform defaults.
 type WifiAPOptions struct {
 	Channel  int    // 0 = auto-select
