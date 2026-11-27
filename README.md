@@ -127,7 +127,7 @@ sudo net-tool serve
 # net-tool web UI: http://127.0.0.1:8190
 ```
 
-The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan & connect), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
+The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan & connect), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). If port `8190` is already taken, the next free consecutive port is tried automatically (up to 100) and the actual URL is printed; pass `--no-drift` to fail on a conflict instead. The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
 
 ## Development
 
