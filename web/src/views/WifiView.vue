@@ -5,6 +5,7 @@ import { Refresh } from '@element-plus/icons-vue'
 import { scanWifi, connectWifi, disconnectWifi, getInterfaces } from '../api'
 import { usePersistentFilter, usePersistentSort } from '../preferences'
 import { sortRows } from '../sorting'
+import WifiPasswordDialog from '../components/WifiPasswordDialog.vue'
 
 const props = defineProps({
   capabilities: { type: Object, default: null }
@@ -22,6 +23,13 @@ const remember = ref(false)
 const attempts = ref(3)
 const connecting = ref(false)
 const disconnectingSSID = ref('')
+const passwordDialogVisible = ref(false)
+const passwordDialogSSID = ref('')
+
+function openPasswordDialog(row) {
+  passwordDialogSSID.value = row?.ssid || currentSSID.value || ''
+  passwordDialogVisible.value = true
+}
 
 const { filter, resetFilter } = usePersistentFilter('wifi', {
   keyword: '',
@@ -220,6 +228,7 @@ onMounted(() => {
       </div>
       <div class="block__actions">
         <span v-if="displayWifiInterface" class="mono wifi-iface">网卡 {{ displayWifiInterface }}</span>
+        <el-button @click="openPasswordDialog(null)">找回密码</el-button>
         <el-button :icon="Refresh" :loading="loading" :disabled="!scanSupported" @click="scan">刷新</el-button>
       </div>
     </div>
@@ -300,7 +309,7 @@ onMounted(() => {
             <span v-else class="text-dim">—</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="80" fixed="right">
+        <el-table-column label="操作" width="130" fixed="right">
           <template #default="{ row }">
             <el-button
               v-if="isCurrent(row)"
@@ -310,6 +319,7 @@ onMounted(() => {
               @click="handleDisconnect(row)"
             >断开</el-button>
             <el-button v-else link type="primary" @click="openConnect(row)">连接</el-button>
+            <el-button link type="warning" @click="openPasswordDialog(row)">找回</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -347,6 +357,14 @@ onMounted(() => {
         <el-button type="primary" :loading="connecting" @click="handleConnect">连接</el-button>
       </template>
     </el-dialog>
+
+    <WifiPasswordDialog
+      v-model="passwordDialogVisible"
+      :ssid="passwordDialogSSID"
+      :iface="wifiInterfaceName"
+      :networks="networks"
+      @done="refreshAfterChange"
+    />
   </section>
 </template>
 

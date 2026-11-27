@@ -124,6 +124,32 @@ export function disconnectWifi(iface) {
   return request(`/api/wifi/connect${query}`, { method: 'DELETE' })
 }
 
+// Password recovery: reading saved credentials and previewing candidates are
+// quick; a recovery job runs in the background and is polled for progress.
+export function getSavedWifiPassword({ interface: iface, ssid }) {
+  const query = new URLSearchParams({ ssid: ssid || '' })
+  if (iface) query.set('interface', iface)
+  return request(`/api/wifi/saved-password?${query.toString()}`)
+}
+
+export function generatePasswordCandidates(payload) {
+  return request('/api/wifi/password-candidates', {
+    method: 'POST', body: payload, timeoutMs: 30000
+  })
+}
+
+export function startPasswordAudit(payload) {
+  return request('/api/wifi/password-audit', { method: 'POST', body: payload })
+}
+
+export function getPasswordAudit(id) {
+  return request(`/api/wifi/password-audit/${encodeURIComponent(id)}`)
+}
+
+export function cancelPasswordAudit(id) {
+  return request(`/api/wifi/password-audit/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export function listHosts() {
   return request('/api/hosts')
 }

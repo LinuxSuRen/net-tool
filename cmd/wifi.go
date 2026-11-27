@@ -5,6 +5,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -213,5 +214,27 @@ func init() {
 	tf.BoolVar(&wifiAPDry, "dry-run", false, "print the system commands instead of running them")
 	wifiAPCmd.AddCommand(wifiAPStopCmd)
 	wifiCmd.AddCommand(wifiAPCmd)
+
+	sp := wifiSavedPasswordCmd.Flags()
+	sp.StringVar(&wifiSavedIface, "iface", "", "Wi-Fi interface to use (platform default when empty)")
+	sp.BoolVar(&wifiSavedDry, "dry-run", false, "accepted for consistency; reading saved passwords never changes the system")
+	wifiCmd.AddCommand(wifiSavedPasswordCmd)
+
+	cp := wifiCandidatesCmd.Flags()
+	cp.BoolVar(&wifiCandidatesBuiltin, "builtin", true, "include the built-in common password list")
+	cp.StringVar(&wifiCandidatesWordlist, "wordlist", "", "local file with one candidate per line (or first CSV column)")
+	cp.IntVar(&wifiCandidatesMax, "max", netconf.DefaultCandidateLimit, "maximum number of candidates")
+	wifiCmd.AddCommand(wifiCandidatesCmd)
+
+	rp := wifiRecoverCmd.Flags()
+	rp.StringVar(&wifiRecoverIface, "iface", "", "Wi-Fi interface to use (platform default when empty)")
+	rp.BoolVar(&wifiRecoverBuiltin, "builtin", true, "include the built-in common password list")
+	rp.StringVar(&wifiRecoverWordlist, "wordlist", "", "local file with one candidate per line (or first CSV column)")
+	rp.IntVar(&wifiRecoverMax, "max", netconf.DefaultCandidateLimit, "maximum number of candidates")
+	rp.IntVar(&wifiRecoverAttemptMS, "attempt-ms", int(netconf.DefaultAuditAttemptTime/time.Millisecond), "association timeout per candidate")
+	rp.IntVar(&wifiRecoverDelayMS, "delay-ms", int(netconf.DefaultAuditDelay/time.Millisecond), "pause between candidates")
+	rp.BoolVar(&wifiRecoverAuthorized, "i-am-authorized", false, "confirm this is your own network or you have permission")
+	wifiCmd.AddCommand(wifiRecoverCmd)
+
 	rootCmd.AddCommand(wifiCmd)
 }
