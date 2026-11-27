@@ -20,6 +20,9 @@ type windowsManager struct {
 	joinTimeout time.Duration
 	joinPoll    time.Duration
 	retryDelay  time.Duration
+	scanTries   int
+	scanDelay   time.Duration
+	scanTrigger func() error
 }
 
 // netsh wlan connect returns as soon as the request is accepted; association
@@ -29,19 +32,23 @@ const (
 	defaultJoinTimeout = 15 * time.Second
 	defaultJoinPoll    = 500 * time.Millisecond
 	defaultRetryDelay  = time.Second
+	defaultScanTries   = 3
+	defaultScanDelay   = 700 * time.Millisecond
 )
 
 // NewManager returns the Windows backend.
 func NewManager() Manager {
 	return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{},
-		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay}
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay,
+		scanTries: defaultScanTries, scanDelay: defaultScanDelay, scanTrigger: triggerWlanScan}
 }
 
 // NewDryManager returns the Windows backend recording mutations instead of
 // running them.
 func NewDryManager() Manager {
 	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{},
-		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay}
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay,
+		scanTries: defaultScanTries, scanDelay: defaultScanDelay, scanTrigger: triggerWlanScan}
 }
 
 // DryCommands returns the recorded mutations (used by the CLI dry run).
@@ -190,13 +197,42 @@ func (m *windowsManager) SetDNS(name string, cfg DNSConfig) error {
 	return nil
 }
 
+// scanLooksStale detects the transient reply Windows gives right after a join:
+// only the associated SSID is reported until the visible-network cache
+// refreshes. Showing that as the whole list hides every other network.
+func scanLooksStale(nets []WifiNetwork, current string) bool {
+	if current == "" {
+		return false
+	}
+	return len(nets) == 0 || (len(nets) == 1 && nets[0].SSID == current)
+}
+
 func (m *windowsManager) ScanWifi() ([]WifiNetwork, error) {
 	current := m.currentSSID()
-	out, err := m.query.Run("netsh", "wlan", "show", "networks", "mode=bssid")
-	if err != nil {
-		return nil, err
+	tries := m.scanTries
+	if tries <= 0 {
+		tries = 1
 	}
-	return parseWlanNetworks(out, current), nil
+	var nets []WifiNetwork
+	for i := 0; i < tries; i++ {
+		if m.scanTrigger != nil {
+			// Triggering a fresh scan is best effort: netsh may still return
+			// usable cached results if the native API is unavailable.
+			_ = m.scanTrigger()
+		}
+		if m.scanDelay > 0 {
+			time.Sleep(m.scanDelay)
+		}
+		out, err := m.query.Run("netsh", "wlan", "show", "networks", "mode=bssid")
+		if err != nil {
+			return nil, err
+		}
+		nets = parseWlanNetworks(out, current)
+		if !scanLooksStale(nets, current) || i == tries-1 {
+			break
+		}
+	}
+	return nets, nil
 }
 
 // wifiSecurity returns the security advertised by the scanned network, or ""

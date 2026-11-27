@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { scanWifi, connectWifi, disconnectWifi, getInterfaces } from '../api'
-import { usePersistentFilter } from '../preferences'
+import { usePersistentFilter, usePersistentSort } from '../preferences'
+import { sortRows } from '../sorting'
 
 const props = defineProps({
   capabilities: { type: Object, default: null }
@@ -27,6 +28,14 @@ const { filter, resetFilter } = usePersistentFilter('wifi', {
   security: 'all',
   status: 'all'
 })
+const { sort, onSortChange, resetSort } = usePersistentSort('wifi')
+const tableKey = ref(0)
+
+function resetAll() {
+  resetFilter()
+  resetSort()
+  tableKey.value++ // re-mount so Element Plus picks up the restored default-sort
+}
 
 // 记住密码只保存在当前浏览器，按 SSID 隔离；后端不接收该选项，也不落盘密码。
 const REMEMBER_PREFIX = 'net-tool.wifi.password.'
@@ -100,6 +109,16 @@ const filteredNetworks = computed(() => {
     return true
   })
 })
+
+const sortedNetworks = computed(() => sortRows(filteredNetworks.value, sort, (row, prop) => {
+  switch (prop) {
+    case 'signal': return Number(row.signal || 0)
+    case 'channel': return Number(row.channel || 0)
+    case 'current': return isCurrent(row) ? 1 : 0
+    case 'security': return row.security || ''
+    default: return row.ssid || ''
+  }
+}))
 
 async function scan() {
   if (!scanSupported.value) return
@@ -239,16 +258,24 @@ onMounted(() => {
           <el-option label="其他网络" value="other" />
         </el-select>
         <span class="filter-bar__count">{{ filteredNetworks.length }} / {{ networks.length }}</span>
-        <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+        <el-button class="filter-bar__reset" link @click="resetAll">重置</el-button>
       </div>
 
-      <el-table v-loading="loading" :data="filteredNetworks" border empty-text="没有匹配的网络">
-        <el-table-column label="SSID" min-width="160">
+      <el-table
+        :key="tableKey"
+        v-loading="loading"
+        :data="sortedNetworks"
+        :default-sort="sort"
+        border
+        empty-text="没有匹配的网络"
+        @sort-change="onSortChange"
+      >
+        <el-table-column label="SSID" prop="ssid" min-width="160" sortable="custom">
           <template #default="{ row }">
             <span class="mono">{{ row.ssid }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="信号" min-width="170">
+        <el-table-column label="信号" prop="signal" min-width="170" sortable="custom">
           <template #default="{ row }">
             <div class="wifi-signal">
               <el-progress :percentage="row.signal || 0" :stroke-width="6" :show-text="false" class="wifi-signal__bar" />
@@ -256,18 +283,18 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="安全性" min-width="120">
+        <el-table-column label="安全性" prop="security" min-width="120" sortable="custom">
           <template #default="{ row }">
             <span v-if="row.security">{{ row.security }}</span>
             <span v-else class="text-dim">开放</span>
           </template>
         </el-table-column>
-        <el-table-column label="信道" width="80">
+        <el-table-column label="信道" prop="channel" width="80" sortable="custom">
           <template #default="{ row }">
             <span class="mono">{{ row.channel || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="当前" width="80">
+        <el-table-column label="当前" prop="current" width="80" sortable="custom">
           <template #default="{ row }">
             <el-tag v-if="isCurrent(row)" type="success" size="small">当前</el-tag>
             <span v-else class="text-dim">—</span>

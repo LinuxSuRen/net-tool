@@ -51,6 +51,68 @@ func wlanQueryRunner(interfaces func(int) string) wlanFakeRunner {
 	}
 }
 
+func TestScanWifiRetriesWhenOnlyCurrentNetworkVisible(t *testing.T) {
+	scans := 0
+	query := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		full := strings.Join(args, " ")
+		switch {
+		case strings.Contains(full, "show interfaces"):
+			return associatedOut, nil
+		case strings.Contains(full, "show networks"):
+			scans++
+			if scans == 1 {
+				return wpa3ScanOut, nil // stale: just the connected network
+			}
+			return wpa3ScanOut + `SSID 2 : OtherNet
+    网络类型                   : 结构
+    身份验证                   : WPA2-Personal
+    加密                       : CCMP
+`, nil
+		}
+		return "", newError(CodeCommandFailed, "unexpected query: %s", full)
+	})
+	triggers := 0
+	mgr := &windowsManager{
+		query:       query,
+		scanTries:   3,
+		scanTrigger: func() error { triggers++; return nil },
+	}
+	nets, err := mgr.ScanWifi()
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if scans != 2 || triggers != 2 {
+		t.Errorf("scan calls = %d, scan triggers = %d, want 2 each", scans, triggers)
+	}
+	if len(nets) != 2 || nets[1].SSID != "OtherNet" {
+		t.Errorf("scan result = %+v, want both networks", nets)
+	}
+}
+
+func TestScanWifiKeepsFullListWithoutRetry(t *testing.T) {
+	scans := 0
+	query := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		full := strings.Join(args, " ")
+		if strings.Contains(full, "show interfaces") {
+			return associatedOut, nil
+		}
+		if strings.Contains(full, "show networks") {
+			scans++
+			return wpa3ScanOut + `SSID 2 : OtherNet
+    身份验证                   : WPA2-Personal
+`, nil
+		}
+		return "", newError(CodeCommandFailed, "unexpected query: %s", full)
+	})
+	mgr := &windowsManager{query: query, scanTries: 3}
+	if _, err := mgr.ScanWifi(); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if scans != 1 {
+		t.Errorf("scan calls = %d, want 1", scans)
+	}
+}
+
 func TestConnectWifiVerifiesAssociation(t *testing.T) {
 	query := wlanQueryRunner(func(n int) string {
 		if n < 3 { // still associating

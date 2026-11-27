@@ -39,3 +39,31 @@ export function usePersistentFilter(key, fallback) {
 
   return { filter, resetFilter }
 }
+
+// Table sort state is persisted next to filters so a reload keeps the column
+// and direction the user picked. Element Plus reports null when sorting is
+// cleared, which we store as an empty prop/no order.
+export function usePersistentSort(key, fallback = { prop: '', order: null }) {
+  const stored = readPreference(`sort.${key}`, {})
+  const saved = stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}
+  const defaults = { prop: '', order: null, ...fallback }
+  const sort = reactive({
+    prop: saved.prop || defaults.prop,
+    order: ['ascending', 'descending'].includes(saved.order)
+      ? saved.order
+      : defaults.order
+  })
+
+  watch(sort, value => writePreference(`sort.${key}`, value), { deep: true })
+
+  function onSortChange(change) {
+    sort.prop = change.prop || ''
+    sort.order = change.order || null
+  }
+
+  function resetSort() {
+    Object.assign(sort, defaults)
+  }
+
+  return { sort, onSortChange, resetSort }
+}

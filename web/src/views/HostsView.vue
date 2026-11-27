@@ -3,7 +3,8 @@ import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { listHosts, addHost, removeHost } from '../api'
-import { usePersistentFilter } from '../preferences'
+import { usePersistentFilter, usePersistentSort } from '../preferences'
+import { sortRows } from '../sorting'
 
 const entries = ref([])
 const loading = ref(false)
@@ -16,6 +17,14 @@ const { filter, resetFilter } = usePersistentFilter('hosts', {
   type: 'all',
   status: 'all'
 })
+const { sort, onSortChange, resetSort } = usePersistentSort('hosts')
+const tableKey = ref(0)
+
+function resetAll() {
+  resetFilter()
+  resetSort()
+  tableKey.value++
+}
 
 // hosts 条目没有独立的“状态/类型”字段：这里按 IP 版本分类，并把是否由
 // net-tool 管理作为可过滤的状态（系统条目不可删除）。
@@ -35,6 +44,14 @@ const filteredEntries = computed(() => {
     return true
   })
 })
+
+const sortedEntries = computed(() => sortRows(filteredEntries.value, sort, (row, prop) => {
+  switch (prop) {
+    case 'hostnames': return (row.hostnames || []).join(' ')
+    case 'managed': return row.managed ? 1 : 0
+    default: return row.ip || ''
+  }
+}))
 
 const form = reactive({
   ip: '',
@@ -154,21 +171,29 @@ onMounted(load)
         <el-option label="系统" value="system" />
       </el-select>
       <span class="filter-bar__count">{{ filteredEntries.length }} / {{ entries.length }}</span>
-      <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+      <el-button class="filter-bar__reset" link @click="resetAll">重置</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="filteredEntries" border empty-text="没有匹配的记录">
-      <el-table-column label="IP 地址" min-width="140">
+    <el-table
+      :key="tableKey"
+      v-loading="loading"
+      :data="sortedEntries"
+      :default-sort="sort"
+      border
+      empty-text="没有匹配的记录"
+      @sort-change="onSortChange"
+    >
+      <el-table-column label="IP 地址" prop="ip" min-width="140" sortable="custom">
         <template #default="{ row }">
           <span class="mono">{{ row.ip }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="域名" min-width="200">
+      <el-table-column label="域名" prop="hostnames" min-width="200" sortable="custom">
         <template #default="{ row }">
           <span>{{ (row.hostnames || []).join(' ') }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="来源" width="120">
+      <el-table-column label="来源" prop="managed" width="120" sortable="custom">
         <template #default="{ row }">
           <el-tag :type="row.managed ? 'success' : 'info'" size="small">
             {{ row.managed ? 'net-tool 管理' : '系统' }}

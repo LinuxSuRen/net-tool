@@ -3,7 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { getInterfaces } from '../api'
-import { usePersistentFilter } from '../preferences'
+import { usePersistentFilter, usePersistentSort } from '../preferences'
+import { sortRows } from '../sorting'
 import InterfaceDialog from '../components/InterfaceDialog.vue'
 
 const props = defineProps({
@@ -28,6 +29,14 @@ const { filter, resetFilter } = usePersistentFilter('interfaces', {
   status: 'all',
   mode: 'all'
 })
+const { sort, onSortChange, resetSort } = usePersistentSort('interfaces')
+const tableKey = ref(0)
+
+function resetAll() {
+  resetFilter()
+  resetSort()
+  tableKey.value++
+}
 
 function ipv4Addresses(row) {
   const ips = Array.isArray(row.ips) ? row.ips : []
@@ -49,6 +58,18 @@ const filteredList = computed(() => {
     return true
   })
 })
+
+const sortedList = computed(() => sortRows(filteredList.value, sort, (row, prop) => {
+  switch (prop) {
+    case 'type': return TYPE_TEXT[row.type] || TYPE_TEXT.other
+    case 'status': return row.up ? 1 : 0
+    case 'mode': return row.dhcp ? 'DHCP' : '静态'
+    case 'ipv4': return ipv4Addresses(row)[0] || ''
+    case 'gateway': return row.gateway || ''
+    case 'dns': return (row.dns || [])[0] || ''
+    default: return row.name || ''
+  }
+}))
 
 async function load() {
   loading.value = true
@@ -104,44 +125,52 @@ onMounted(load)
         <el-option label="静态" value="static" />
       </el-select>
       <span class="filter-bar__count">{{ filteredList.length }} / {{ list.length }}</span>
-      <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+      <el-button class="filter-bar__reset" link @click="resetAll">重置</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="filteredList" border empty-text="没有匹配的网卡">
-      <el-table-column label="名称" min-width="170">
+    <el-table
+      :key="tableKey"
+      v-loading="loading"
+      :data="sortedList"
+      :default-sort="sort"
+      border
+      empty-text="没有匹配的网卡"
+      @sort-change="onSortChange"
+    >
+      <el-table-column label="名称" prop="name" min-width="170" sortable="custom">
         <template #default="{ row }">
           <div class="mono">{{ row.name }}</div>
           <div v-if="row.hardware_addr" class="mono iface-mac">{{ row.hardware_addr }}</div>
         </template>
       </el-table-column>
-      <el-table-column label="类型" width="90">
+      <el-table-column label="类型" prop="type" width="90" sortable="custom">
         <template #default="{ row }">
           {{ TYPE_TEXT[row.type] || TYPE_TEXT.other }}
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="90">
+      <el-table-column label="状态" prop="status" width="90" sortable="custom">
         <template #default="{ row }">
           <el-tag :type="row.up ? 'success' : 'info'" size="small">{{ row.up ? '已启用' : '已停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="模式" width="80">
+      <el-table-column label="模式" prop="mode" width="80" sortable="custom">
         <template #default="{ row }">
           {{ row.dhcp ? 'DHCP' : '静态' }}
         </template>
       </el-table-column>
-      <el-table-column label="IPv4 地址" min-width="140">
+      <el-table-column label="IPv4 地址" prop="ipv4" min-width="140" sortable="custom">
         <template #default="{ row }">
           <div v-for="addr in ipv4Addresses(row)" :key="addr" class="mono">{{ addr }}</div>
           <span v-if="ipv4Addresses(row).length === 0" class="text-dim">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="网关" min-width="120">
+      <el-table-column label="网关" prop="gateway" min-width="120" sortable="custom">
         <template #default="{ row }">
           <span v-if="row.gateway" class="mono">{{ row.gateway }}</span>
           <span v-else class="text-dim">—</span>
         </template>
       </el-table-column>
-      <el-table-column label="DNS" min-width="140">
+      <el-table-column label="DNS" prop="dns" min-width="140" sortable="custom">
         <template #default="{ row }">
           <div v-for="server in row.dns || []" :key="server" class="mono">{{ server }}</div>
           <span v-if="!row.dns || row.dns.length === 0" class="text-dim">—</span>
