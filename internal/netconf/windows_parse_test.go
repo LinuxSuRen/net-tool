@@ -1,9 +1,11 @@
 package netconf
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParsePSInterfaces(t *testing.T) {
@@ -186,5 +188,60 @@ func TestWLANProfileXML(t *testing.T) {
 	}
 	if _, err := wlanProfileXML("", "x"); err == nil {
 		t.Error("empty ssid should fail")
+	}
+}
+
+func TestWLANProfileXMLForWPA3(t *testing.T) {
+	profile, err := wlanProfileXMLFor("M1-68B091", "12345678", "WPA3-Personal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<authentication>WPA3SAE</authentication>",
+		"<encryption>AES</encryption>",
+		`xmlns="http://www.microsoft.com/networking/WLAN/profile/v4"`,
+		"<transitionMode",
+		"<keyMaterial>12345678</keyMaterial>",
+	} {
+		if !strings.Contains(profile, want) {
+			t.Errorf("profile missing %q:\n%s", want, profile)
+		}
+	}
+	if strings.Contains(profile, "WPA2PSK") {
+		t.Errorf("WPA3 profile must not fall back to WPA2PSK:\n%s", profile)
+	}
+	// Enterprise profiles must not be mistaken for SAE.
+	ent, err := wlanProfileXMLFor("corp", "secret", "WPA3-Enterprise")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(ent, "WPA3SAE") {
+		t.Errorf("enterprise security must not produce an SAE profile:\n%s", ent)
+	}
+}
+
+func TestWaitForWlanSSID(t *testing.T) {
+	calls := 0
+	got, err := waitForWlanSSID(func() (string, error) {
+		calls++
+		if calls < 3 {
+			return "", nil // still associating
+		}
+		return "M1-68B091", nil
+	}, "M1-68B091", time.Second, time.Millisecond)
+	if err != nil || got != "M1-68B091" || calls < 3 {
+		t.Errorf("got=%q calls=%d err=%v", got, calls, err)
+	}
+
+	got, err = waitForWlanSSID(func() (string, error) { return "", errors.New("netsh failed") },
+		"M1-68B091", 5*time.Millisecond, time.Millisecond)
+	if err == nil || CodeOf(err) != CodeCommandFailed {
+		t.Errorf("query failures should surface as command_failed, got %v", err)
+	}
+
+	got, err = waitForWlanSSID(func() (string, error) { return "OtherNet", nil },
+		"M1-68B091", 5*time.Millisecond, time.Millisecond)
+	if err == nil || CodeOf(err) != CodeCommandFailed || !strings.Contains(err.Error(), "OtherNet") {
+		t.Errorf("timeout should report the wrong SSID, got %q err=%v", got, err)
 	}
 }

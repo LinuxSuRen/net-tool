@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // windowsManager implements Manager on top of PowerShell (Get-Net* read),
@@ -14,17 +15,31 @@ import (
 // subcommand keywords are English regardless of UI locale; only output is
 // localized, which is why reads go through PowerShell JSON.
 type windowsManager struct {
-	query  Runner
-	mutate Runner
+	query       Runner
+	mutate      Runner
+	joinTimeout time.Duration
+	joinPoll    time.Duration
 }
 
+// netsh wlan connect returns as soon as the request is accepted; association
+// happens asynchronously, so a successful exit code alone is not proof that
+// the SSID was joined.
+const (
+	defaultJoinTimeout = 15 * time.Second
+	defaultJoinPoll    = 500 * time.Millisecond
+)
+
 // NewManager returns the Windows backend.
-func NewManager() Manager { return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{}} }
+func NewManager() Manager {
+	return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{},
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll}
+}
 
 // NewDryManager returns the Windows backend recording mutations instead of
 // running them.
 func NewDryManager() Manager {
-	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{}}
+	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{},
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll}
 }
 
 // DryCommands returns the recorded mutations (used by the CLI dry run).
@@ -170,11 +185,51 @@ func (m *windowsManager) ScanWifi() ([]WifiNetwork, error) {
 	return parseWlanNetworks(out, current), nil
 }
 
+// wifiSecurity returns the security advertised by the scanned network, or ""
+// when it is not visible right now (hidden networks). It is best effort: the
+// association check below still reports an honest failure if the guess is
+// wrong.
+func (m *windowsManager) wifiSecurity(ssid string) string {
+	nets, err := m.ScanWifi()
+	if err != nil {
+		return ""
+	}
+	for _, net := range nets {
+		if net.SSID == ssid {
+			return net.Security
+		}
+	}
+	return ""
+}
+
+// waitForWlanJoin checks the real adapter state after `netsh wlan connect`,
+// which reports success even when authentication or association fails later.
+func (m *windowsManager) waitForWlanJoin(ssid, iface string) (string, error) {
+	args := []string{"wlan", "show", "interfaces"}
+	if iface != "" {
+		args = append(args, "name="+iface)
+	}
+	timeout, poll := m.joinTimeout, m.joinPoll
+	if timeout <= 0 {
+		timeout = defaultJoinTimeout
+	}
+	if poll <= 0 {
+		poll = defaultJoinPoll
+	}
+	return waitForWlanSSID(func() (string, error) {
+		out, err := m.query.Run("netsh", args...)
+		if err != nil {
+			return "", err
+		}
+		return parseWlanCurrentSSID(out), nil
+	}, ssid, timeout, poll)
+}
+
 func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 	if !validSSID(ssid) {
 		return newError(CodeInvalidArgument, "invalid SSID %q", ssid)
 	}
-	profile, err := wlanProfileXML(ssid, password)
+	profile, err := wlanProfileXMLFor(ssid, password, m.wifiSecurity(ssid))
 	if err != nil {
 		return err
 	}
@@ -189,6 +244,10 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 		return newError(CodeCommandFailed, "write temp profile: %v", err)
 	}
 	tmp.Close()
+	// Re-adding a profile over an existing one leaves stale security state
+	// behind: netsh reports success but the following connect never
+	// associates. Delete first; a missing profile is not an error.
+	_, _ = m.mutate.Run("netsh", "wlan", "delete", "profile", "name="+ssid)
 	if _, err := m.mutate.Run("netsh", "wlan", "add", "profile",
 		"filename="+path, "user=all"); err != nil {
 		return err
@@ -198,6 +257,14 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 		args = append(args, "interface="+iface)
 	}
 	_, err = m.mutate.Run("netsh", args...)
+	if err != nil {
+		return err
+	}
+	// A dry run records mutations only; there is nothing to verify.
+	if _, dry := m.mutate.(*DryRunner); dry {
+		return nil
+	}
+	_, err = m.waitForWlanJoin(ssid, iface)
 	return err
 }
 

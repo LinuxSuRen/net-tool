@@ -68,7 +68,7 @@ var wifiConnectCmd = &cobra.Command{
 			reportDry(mgr)
 			return nil
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "requested to join %s\n", ssid)
+		fmt.Fprintf(cmd.OutOrStdout(), "connected to %s\n", ssid)
 		return nil
 	},
 }
