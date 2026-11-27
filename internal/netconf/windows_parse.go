@@ -277,11 +277,21 @@ func isWPA3Personal(security string) bool {
 	return strings.Contains(s, "wpa3") && !strings.Contains(s, "enterprise")
 }
 
-// wlanProfileXMLFor builds a WLAN profile for the security advertised by a
-// scan (e.g. "WPA3-Personal", "WPA2-Personal" or "Open"). WPA3-Personal must
-// use WPA3SAE with transition mode: a WPA2PSK profile is accepted by
-// `netsh wlan connect` but never associates with a WPA3-only network.
+// wlanProfileXMLFor builds a WLAN profile named after the SSID itself.
 func wlanProfileXMLFor(ssid, password, security string) (string, error) {
+	return wlanProfileXMLNamed(ssid, ssid, password, security)
+}
+
+// wlanProfileXMLNamed builds a WLAN profile for the security advertised by a
+// scan (e.g. "WPA3-Personal", "WPA2-Personal" or "Open"). The profile name is
+// separate from the SSID so a password audit can create a temporary, uniquely
+// named profile without touching the user's saved one. WPA3-Personal must use
+// WPA3SAE with transition mode: a WPA2PSK profile is accepted by
+// `netsh wlan connect` but never associates with a WPA3-only network.
+func wlanProfileXMLNamed(profileName, ssid, password, security string) (string, error) {
+	if !validProfileName(profileName) {
+		return "", newError(CodeInvalidArgument, "invalid WLAN profile name %q", profileName)
+	}
 	if ssid == "" {
 		return "", newError(CodeInvalidArgument, "ssid is empty")
 	}
@@ -310,5 +320,5 @@ func wlanProfileXMLFor(ssid, password, security string) (string, error) {
 		%s
 	</security></MSM>
 </WLANProfile>
-`, xmlEscaper.Replace(ssid), xmlEscaper.Replace(ssid), auth, enc, transition, shared), nil
+`, xmlEscaper.Replace(profileName), xmlEscaper.Replace(ssid), auth, enc, transition, shared), nil
 }

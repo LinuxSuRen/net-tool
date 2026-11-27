@@ -23,6 +23,8 @@ type windowsManager struct {
 	scanTries   int
 	scanDelay   time.Duration
 	scanTrigger func() error
+	// tempDir is injectable so password-audit tests can use t.TempDir().
+	tempDir func() (string, error)
 }
 
 // netsh wlan connect returns as soon as the request is accepted; association

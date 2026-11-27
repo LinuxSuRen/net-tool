@@ -93,6 +93,41 @@ fails. A failed join is retried up to `--attempts` times (default 3); the API
 accepts the same `attempts` field. The Web UI can remember a password per SSID
 in the browser's `localStorage`; it is never sent to or stored by the server.
 
+### Recovering a forgotten Wi-Fi password
+
+The first choice is always the credential the OS already saved (no guessing):
+
+```bash
+net-tool wifi saved-password "HomeNet"        # Windows netsh export / Linux nmcli / macOS Keychain
+```
+
+`wifi recover` checks this saved credential automatically and finishes without
+any guessing when it exists. Otherwise it uses a small candidate list; preview
+it before any online attempt. Uploaded files are one password per line (or the
+first CSV column), UTF-8 or GB18030; nothing is uploaded or written to disk by
+the server.
+
+```bash
+net-tool wifi candidates "HomeNet" --wordlist pwds.txt --max 200
+net-tool wifi recover "HomeNet" --wordlist pwds.txt --i-am-authorized
+```
+
+`recover` tries candidates **serially** with a short timeout (default 4 s) and
+a pause (default 300 ms), stopping on the first match. It uses a temporary
+connection/profile per attempt and removes it afterwards; the user's saved
+profile is not overwritten. A successful match is shown in clear text. The
+built-in list is deliberately small (about 30 common passwords plus SSID and
+numeric variants, capped at 200 by default) — online guessing is slow and only
+appropriate for networks you own or are authorized to test. macOS supports
+reading the saved password but reports `unsupported` for online attempts,
+because `networksetup` would overwrite the saved credential.
+
+The Web UI exposes the same flow under Wi-Fi → 找回密码: read saved password,
+preview/export candidates, authorize, then watch progress. Passwords and
+candidate lists stay in memory in the browser and are cleared when the dialog
+closes. The API jobs are `POST /api/wifi/password-audit`,
+`GET/DELETE /api/wifi/password-audit/{id}` with masked progress.
+
 Wi-Fi hotspot (AP mode, Linux via NetworkManager; macOS/Windows report
 `unsupported` for now):
 
@@ -136,7 +171,7 @@ sudo net-tool serve
 # net-tool web UI: http://127.0.0.1:8190
 ```
 
-The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan, connect and disconnect the current network), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The selected tab, each list's name/type/status filters and the chosen sort column/direction are kept in the browser's `localStorage` and restored after a reload; use 重置 to clear a view's filters and sorting. Wi-Fi scanning retries briefly if Windows reports only the currently connected network right after a join, so the full list stays visible. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). If port `8190` is already taken, the next free consecutive port is tried automatically (up to 100) and the actual URL is printed; pass `--no-drift` to fail on a conflict instead. The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
+The page offers the same four areas as the CLI — interfaces (edit IP/DNS in a dialog), Wi-Fi (scan, connect, disconnect and password recovery), hosts, proxy — in Chinese, and disables what the current platform backend cannot do. The selected tab, each list's name/type/status filters and the chosen sort column/direction are kept in the browser's `localStorage` and restored after a reload; use 重置 to clear a view's filters and sorting. Wi-Fi scanning retries briefly if Windows reports only the currently connected network right after a join, so the full list stays visible. The server binds `127.0.0.1` only; pass `--addr` deliberately if you really need another interface (changing network settings is a privileged operation — keep it local or tunnel it). If port `8190` is already taken, the next free consecutive port is tried automatically (up to 100) and the actual URL is printed; pass `--no-drift` to fail on a conflict instead. The REST API it serves is the same one the CLI capabilities map to, with `{"data": ...}` envelopes and stable error codes (`invalid_argument`, `not_found`, `unsupported`, `permission_denied`, `command_failed`).
 
 ## Development
 

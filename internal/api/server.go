@@ -23,15 +23,23 @@ var (
 
 // Server wires the platform manager to HTTP.
 type Server struct {
-	mgr   netconf.Manager
-	hosts netconf.HostsManager
-	mux   *http.ServeMux
+	mgr     netconf.Manager
+	hosts   netconf.HostsManager
+	wifiPwd netconf.WifiPasswordBackend
+	auditor *netconf.PasswordAuditor
+	mux     *http.ServeMux
 }
 
 // New builds the API server. webFS is the embedded frontend (may be nil in
 // tests).
 func New(mgr netconf.Manager, hosts netconf.HostsManager, webFS fs.FS) *Server {
 	s := &Server{mgr: mgr, hosts: hosts, mux: http.NewServeMux()}
+	// Password recovery is optional: a manager that cannot safely read or try
+	// credentials simply leaves these endpoints reporting unsupported.
+	if backend, ok := mgr.(netconf.WifiPasswordBackend); ok {
+		s.wifiPwd = backend
+		s.auditor = netconf.NewPasswordAuditor(backend)
+	}
 	s.routes(webFS)
 	return s
 }
@@ -46,6 +54,11 @@ func (s *Server) routes(webFS fs.FS) {
 	m.HandleFunc("GET /api/wifi", s.handleWifiScan)
 	m.HandleFunc("POST /api/wifi/connect", s.handleWifiConnect)
 	m.HandleFunc("DELETE /api/wifi/connect", s.handleWifiDisconnect)
+	m.HandleFunc("GET /api/wifi/saved-password", s.handleWifiSavedPassword)
+	m.HandleFunc("POST /api/wifi/password-candidates", s.handleWifiPasswordCandidates)
+	m.HandleFunc("POST /api/wifi/password-audit", s.handleWifiPasswordAuditStart)
+	m.HandleFunc("GET /api/wifi/password-audit/{id}", s.handleWifiPasswordAuditGet)
+	m.HandleFunc("DELETE /api/wifi/password-audit/{id}", s.handleWifiPasswordAuditCancel)
 	m.HandleFunc("POST /api/wifi/ap", s.handleWifiAPStart)
 	m.HandleFunc("DELETE /api/wifi/ap", s.handleWifiAPStop)
 	m.HandleFunc("GET /api/hosts", s.handleHostsList)
