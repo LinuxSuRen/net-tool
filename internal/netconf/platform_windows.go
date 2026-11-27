@@ -19,6 +19,7 @@ type windowsManager struct {
 	mutate      Runner
 	joinTimeout time.Duration
 	joinPoll    time.Duration
+	retryDelay  time.Duration
 }
 
 // netsh wlan connect returns as soon as the request is accepted; association
@@ -27,19 +28,20 @@ type windowsManager struct {
 const (
 	defaultJoinTimeout = 15 * time.Second
 	defaultJoinPoll    = 500 * time.Millisecond
+	defaultRetryDelay  = time.Second
 )
 
 // NewManager returns the Windows backend.
 func NewManager() Manager {
 	return &windowsManager{query: ExecRunner{}, mutate: ExecRunner{},
-		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll}
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay}
 }
 
 // NewDryManager returns the Windows backend recording mutations instead of
 // running them.
 func NewDryManager() Manager {
 	return &windowsManager{query: ExecRunner{}, mutate: &DryRunner{},
-		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll}
+		joinTimeout: defaultJoinTimeout, joinPoll: defaultJoinPoll, retryDelay: defaultRetryDelay}
 }
 
 // DryCommands returns the recorded mutations (used by the CLI dry run).
@@ -239,11 +241,11 @@ func (m *windowsManager) waitForWlanState(iface, want string) error {
 	return err
 }
 
-func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
+func (m *windowsManager) ConnectWifi(iface, ssid string, opts WifiConnectOptions) error {
 	if !validSSID(ssid) {
 		return newError(CodeInvalidArgument, "invalid SSID %q", ssid)
 	}
-	profile, err := wlanProfileXMLFor(ssid, password, m.wifiSecurity(ssid))
+	profile, err := wlanProfileXMLFor(ssid, opts.Password, m.wifiSecurity(ssid))
 	if err != nil {
 		return err
 	}
@@ -270,15 +272,26 @@ func (m *windowsManager) ConnectWifi(iface, ssid, password string) error {
 	if iface != "" {
 		args = append(args, "interface="+iface)
 	}
-	_, err = m.mutate.Run("netsh", args...)
-	if err != nil {
-		return err
+	_, dry := m.mutate.(*DryRunner)
+	attempts := NormalizeWifiAttempts(opts.Attempts)
+	if dry {
+		// A dry run records mutations only; there is nothing to retry.
+		attempts = 1
 	}
-	// A dry run records mutations only; there is nothing to verify.
-	if _, dry := m.mutate.(*DryRunner); dry {
-		return nil
-	}
-	return m.waitForWlanState(iface, ssid)
+	return retryWifi(attempts, m.retryDelay, func(attempt int) error {
+		if attempt > 1 {
+			// A failed association can leave the adapter stuck in
+			// associating; clear it before issuing the next request.
+			_, _ = m.mutate.Run("netsh", "wlan", "disconnect")
+		}
+		if _, err := m.mutate.Run("netsh", args...); err != nil {
+			return err
+		}
+		if dry {
+			return nil
+		}
+		return m.waitForWlanState(iface, ssid)
+	})
 }
 
 func (m *windowsManager) DisconnectWifi(iface string) error {

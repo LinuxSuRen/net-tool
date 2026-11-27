@@ -16,8 +16,34 @@ const scanDenied = ref(false)
 const dialogVisible = ref(false)
 const target = ref(null)
 const password = ref('')
+const remember = ref(false)
+const attempts = ref(3)
 const connecting = ref(false)
 const disconnectingSSID = ref('')
+
+// 记住密码只保存在当前浏览器，按 SSID 隔离；后端不接收该选项，也不落盘密码。
+const REMEMBER_PREFIX = 'net-tool.wifi.password.'
+
+function passwordKey(ssid) {
+  return REMEMBER_PREFIX + encodeURIComponent(ssid)
+}
+
+function rememberedPassword(ssid) {
+  try {
+    return localStorage.getItem(passwordKey(ssid)) || ''
+  } catch (e) {
+    return ''
+  }
+}
+
+function storePassword(ssid, pwd) {
+  try {
+    if (pwd) localStorage.setItem(passwordKey(ssid), pwd)
+    else localStorage.removeItem(passwordKey(ssid))
+  } catch (e) {
+    // 隐私模式下 localStorage 可能不可用：不影响本次连接
+  }
+}
 
 const scanSupported = computed(() => !props.capabilities || props.capabilities.wifi_scan !== false)
 
@@ -73,7 +99,10 @@ async function loadInterfaces() {
 
 function openConnect(row) {
   target.value = row
-  password.value = ''
+  const saved = rememberedPassword(row.ssid)
+  password.value = saved
+  remember.value = !!saved
+  attempts.value = 3
   dialogVisible.value = true
 }
 
@@ -89,8 +118,10 @@ async function handleConnect() {
     await connectWifi({
       interface: wifiInterfaceName.value,
       ssid: target.value.ssid,
-      password: password.value
+      password: password.value,
+      attempts: attempts.value
     })
+    storePassword(target.value.ssid, remember.value ? password.value : '')
     ElMessage.success('连接成功')
     dialogVisible.value = false
     await refreshAfterChange()
@@ -218,6 +249,16 @@ onMounted(() => {
             placeholder="开放网络无需填写密码"
           />
         </el-form-item>
+        <el-form-item label="记住密码">
+          <div class="wifi-options">
+            <el-checkbox v-model="remember">记住密码</el-checkbox>
+            <span class="text-dim">仅保存在当前浏览器</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="重试次数">
+          <el-input-number v-model="attempts" :min="1" :max="5" size="small" />
+          <span class="text-dim wifi-options__hint">失败后自动重新关联</span>
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -231,6 +272,18 @@ onMounted(() => {
 .wifi-iface {
   font-size: 13px;
   color: var(--color-text-dim);
+}
+
+.wifi-options {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.wifi-options__hint {
+  margin-left: var(--space-2);
+  font-size: 12px;
 }
 
 .wifi-signal {

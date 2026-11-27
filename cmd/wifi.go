@@ -43,6 +43,7 @@ var wifiListCmd = &cobra.Command{
 var (
 	wifiConnectIface    string
 	wifiConnectPassword string
+	wifiConnectAttempts int
 	wifiConnectDry      bool
 )
 
@@ -61,7 +62,8 @@ var wifiConnectCmd = &cobra.Command{
 			password = raw
 		}
 		mgr := newManager(wifiConnectDry)
-		if err := mgr.ConnectWifi(wifiConnectIface, ssid, password); err != nil {
+		opts := netconf.WifiConnectOptions{Password: password, Attempts: wifiConnectAttempts}
+		if err := mgr.ConnectWifi(wifiConnectIface, ssid, opts); err != nil {
 			return exitErr(cmd, err)
 		}
 		if wifiConnectDry {
@@ -187,6 +189,7 @@ func init() {
 	f := wifiConnectCmd.Flags()
 	f.StringVar(&wifiConnectIface, "iface", "", "interface to use (defaults to the platform's Wi-Fi interface)")
 	f.StringVar(&wifiConnectPassword, "password", "", "pre-shared key (prompted when omitted)")
+	f.IntVar(&wifiConnectAttempts, "attempts", netconf.DefaultWifiAttempts, "association attempts on failure (1-5)")
 	f.BoolVar(&wifiConnectDry, "dry-run", false, "print the system commands instead of running them")
 	wifiCmd.AddCommand(wifiConnectCmd)
 

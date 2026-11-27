@@ -6,6 +6,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // linuxManager implements Manager through NetworkManager's nmcli when
@@ -271,7 +272,7 @@ func (m *linuxManager) ScanWifi() ([]WifiNetwork, error) {
 	return parseNMWifiList(out, true), nil
 }
 
-func (m *linuxManager) ConnectWifi(iface, ssid, password string) error {
+func (m *linuxManager) ConnectWifi(iface, ssid string, opts WifiConnectOptions) error {
 	if !m.hasNM {
 		return newError(CodeUnsupported, "NetworkManager (nmcli) not found; joining Wi-Fi is unavailable")
 	}
@@ -279,14 +280,19 @@ func (m *linuxManager) ConnectWifi(iface, ssid, password string) error {
 		return newError(CodeInvalidArgument, "invalid SSID %q", ssid)
 	}
 	args := []string{"device", "wifi", "connect", ssid}
-	if password != "" {
-		args = append(args, "password", password)
+	if opts.Password != "" {
+		args = append(args, "password", opts.Password)
 	}
 	if iface != "" {
 		args = append(args, "ifname", iface)
 	}
-	_, err := m.mutate.Run("nmcli", args...)
-	return err
+	if _, dry := m.mutate.(*DryRunner); dry {
+		opts.Attempts = 1
+	}
+	return retryWifi(NormalizeWifiAttempts(opts.Attempts), time.Second, func(int) error {
+		_, err := m.mutate.Run("nmcli", args...)
+		return err
+	})
 }
 
 func (m *linuxManager) DisconnectWifi(iface string) error {

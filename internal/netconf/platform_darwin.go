@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // darwinManager implements Manager on top of networksetup(1), ifconfig(1)
@@ -245,7 +246,7 @@ func (m *darwinManager) wdutilNetwork() *WifiNetwork {
 	return parseWdutilInfo(out)
 }
 
-func (m *darwinManager) ConnectWifi(iface, ssid, password string) error {
+func (m *darwinManager) ConnectWifi(iface, ssid string, opts WifiConnectOptions) error {
 	if !validSSID(ssid) {
 		return newError(CodeInvalidArgument, "invalid SSID %q", ssid)
 	}
@@ -260,11 +261,16 @@ func (m *darwinManager) ConnectWifi(iface, ssid, password string) error {
 		return err
 	}
 	args := []string{"-setairportnetwork", iface, ssid}
-	if password != "" {
-		args = append(args, password)
+	if opts.Password != "" {
+		args = append(args, opts.Password)
 	}
-	_, err := m.mutate.Run("networksetup", args...)
-	return err
+	if _, dry := m.mutate.(*DryRunner); dry {
+		opts.Attempts = 1
+	}
+	return retryWifi(NormalizeWifiAttempts(opts.Attempts), time.Second, func(int) error {
+		_, err := m.mutate.Run("networksetup", args...)
+		return err
+	})
 }
 
 func (m *darwinManager) DisconnectWifi(iface string) error {

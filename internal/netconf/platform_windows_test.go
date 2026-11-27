@@ -73,7 +73,7 @@ func TestConnectWifiVerifiesAssociation(t *testing.T) {
 	})
 	mgr := &windowsManager{query: query, mutate: mutate,
 		joinTimeout: time.Second, joinPoll: time.Millisecond}
-	if err := mgr.ConnectWifi("", "M1-68B091", "12345678"); err != nil {
+	if err := mgr.ConnectWifi("", "M1-68B091", WifiConnectOptions{Password: "12345678"}); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	if !strings.Contains(profile, "<authentication>WPA3SAE</authentication>") ||
@@ -88,7 +88,7 @@ func TestConnectWifiFailsWhenNotAssociated(t *testing.T) {
 		mutate:      wlanFakeRunner(func(string, ...string) (string, error) { return "", nil }),
 		joinTimeout: 10 * time.Millisecond, joinPoll: time.Millisecond,
 	}
-	err := mgr.ConnectWifi("", "M1-68B091", "12345678")
+	err := mgr.ConnectWifi("", "M1-68B091", WifiConnectOptions{Password: "12345678"})
 	if err == nil {
 		t.Fatal("netsh exit 0 must not be reported as success when association fails")
 	}
@@ -97,11 +97,72 @@ func TestConnectWifiFailsWhenNotAssociated(t *testing.T) {
 	}
 }
 
+func TestConnectWifiRetriesAssociation(t *testing.T) {
+	associated := false
+	query := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		full := strings.Join(args, " ")
+		switch {
+		case strings.Contains(full, "show networks"):
+			return wpa3ScanOut, nil
+		case strings.Contains(full, "show interfaces"):
+			if associated {
+				return associatedOut, nil
+			}
+			return notAssociatedOut, nil
+		}
+		return "", newError(CodeCommandFailed, "unexpected query: %s", full)
+	})
+	connects := 0
+	mutate := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "wlan connect") {
+			connects++
+			if connects >= 2 {
+				associated = true // the second request actually associates
+			}
+		}
+		return "", nil
+	})
+	mgr := &windowsManager{query: query, mutate: mutate,
+		joinTimeout: 20 * time.Millisecond, joinPoll: time.Millisecond}
+	err := mgr.ConnectWifi("", "M1-68B091", WifiConnectOptions{Password: "12345678", Attempts: 3})
+	if err != nil {
+		t.Fatalf("connect with retry: %v", err)
+	}
+	if connects != 2 {
+		t.Errorf("connect attempts = %d, want 2", connects)
+	}
+}
+
+func TestConnectWifiStopsAtAttemptLimit(t *testing.T) {
+	connects := 0
+	mutate := wlanFakeRunner(func(_ string, args ...string) (string, error) {
+		if strings.Contains(strings.Join(args, " "), "wlan connect") {
+			connects++
+		}
+		return "", nil
+	})
+	mgr := &windowsManager{
+		query:       wlanQueryRunner(func(int) string { return notAssociatedOut }),
+		mutate:      mutate,
+		joinTimeout: 10 * time.Millisecond, joinPoll: time.Millisecond,
+	}
+	err := mgr.ConnectWifi("", "M1-68B091", WifiConnectOptions{Password: "12345678", Attempts: 2})
+	if err == nil || !strings.Contains(err.Error(), "after 2 attempts") {
+		t.Errorf("expected a bounded retry error, got %v", err)
+	}
+	if CodeOf(err) != CodeCommandFailed {
+		t.Errorf("retry error lost its stable code: %v", err)
+	}
+	if connects != 2 {
+		t.Errorf("connect attempts = %d, want 2", connects)
+	}
+}
+
 func TestConnectWifiDrySkipsVerification(t *testing.T) {
 	query := wlanQueryRunner(func(int) string { return notAssociatedOut })
 	dry := &DryRunner{}
 	mgr := &windowsManager{query: query, mutate: dry}
-	if err := mgr.ConnectWifi("", "M1-68B091", "12345678"); err != nil {
+	if err := mgr.ConnectWifi("", "M1-68B091", WifiConnectOptions{Password: "12345678"}); err != nil {
 		t.Fatalf("dry connect: %v", err)
 	}
 	if len(dry.Commands) != 3 ||

@@ -137,6 +137,7 @@ func (s *Server) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 		Interface string `json:"interface"`
 		SSID      string `json:"ssid"`
 		Password  string `json:"password"`
+		Attempts  int    `json:"attempts"`
 	}
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, err)
@@ -147,7 +148,11 @@ func (s *Server) handleWifiConnect(w http.ResponseWriter, r *http.Request) {
 			Err: errors.New("ssid is required")})
 		return
 	}
-	if err := s.mgr.ConnectWifi(body.Interface, body.SSID, body.Password); err != nil {
+	opts := netconf.WifiConnectOptions{
+		Password: body.Password,
+		Attempts: body.Attempts,
+	}
+	if err := s.mgr.ConnectWifi(body.Interface, body.SSID, opts); err != nil {
 		writeError(w, err)
 		return
 	}

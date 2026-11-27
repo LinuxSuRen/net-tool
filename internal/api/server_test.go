@@ -21,6 +21,7 @@ type fakeManager struct {
 	lastIP          map[string]netconf.IPConfig
 	lastDNS         map[string]netconf.DNSConfig
 	lastWifi        string
+	lastAttempts    int
 	lastDisconnect  string
 	lastAP          string
 	stoppedAP       string
@@ -54,8 +55,9 @@ func (f *fakeManager) ScanWifi() ([]netconf.WifiNetwork, error) {
 	}
 	return []netconf.WifiNetwork{{SSID: "Home", Signal: 80, Security: "WPA2"}}, nil
 }
-func (f *fakeManager) ConnectWifi(iface, ssid, password string) error {
-	f.lastWifi = ssid + "/" + password + "@" + iface
+func (f *fakeManager) ConnectWifi(iface, ssid string, opts netconf.WifiConnectOptions) error {
+	f.lastWifi = ssid + "/" + opts.Password + "@" + iface
+	f.lastAttempts = opts.Attempts
 	return nil
 }
 func (f *fakeManager) DisconnectWifi(iface string) error {
@@ -186,12 +188,15 @@ func TestWifiEndpoints(t *testing.T) {
 		t.Fatalf("scan code = %d body = %v", rec.Code, body)
 	}
 	rec, _ = doJSON(t, srv, http.MethodPost, "/api/wifi/connect",
-		`{"interface":"Wi-Fi","ssid":"Home","password":"secret"}`)
+		`{"interface":"Wi-Fi","ssid":"Home","password":"secret","attempts":4}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("connect code = %d", rec.Code)
 	}
 	if mgr.lastWifi != "Home/secret@Wi-Fi" {
 		t.Errorf("lastWifi = %q", mgr.lastWifi)
+	}
+	if mgr.lastAttempts != 4 {
+		t.Errorf("lastAttempts = %d, want 4", mgr.lastAttempts)
 	}
 	rec, _ = doJSON(t, srv, http.MethodPost, "/api/wifi/connect", `{"ssid":""}`)
 	if rec.Code != http.StatusBadRequest {

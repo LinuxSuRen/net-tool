@@ -82,13 +82,16 @@ Wi-Fi:
 ```bash
 net-tool wifi list
 net-tool wifi connect "HomeNet"              # password prompt (input hidden)
+net-tool wifi connect "HomeNet" --attempts 5 # retry a failed association up to 5 times
 net-tool wifi disconnect                     # leave the current network
 ```
 
 On Windows, net-tool detects WPA3-Personal networks (SAE with transition mode)
 from the scan and waits until the adapter is really associated before reporting
 success — `netsh wlan connect` alone returns success even when authentication
-fails.
+fails. A failed join is retried up to `--attempts` times (default 3); the API
+accepts the same `attempts` field. The Web UI can remember a password per SSID
+in the browser's `localStorage`; it is never sent to or stored by the server.
 
 Wi-Fi hotspot (AP mode, Linux via NetworkManager; macOS/Windows report
 `unsupported` for now):
