@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getVersion } from './api'
+import { readPreference, writePreference } from './preferences'
 import InterfacesView from './views/InterfacesView.vue'
 import WifiView from './views/WifiView.vue'
 import HostsView from './views/HostsView.vue'
@@ -9,7 +10,13 @@ import ProxyView from './views/ProxyView.vue'
 
 const version = ref(null)
 const ready = ref(false)
-const activeTab = ref('interfaces')
+
+// Keep the selected tab across reloads; ignore stale/unknown names so an
+// older bookmark can never leave the UI with no visible pane.
+const TAB_NAMES = ['interfaces', 'wifi', 'hosts', 'proxy']
+const savedTab = readPreference('activeTab', 'interfaces')
+const activeTab = ref(TAB_NAMES.includes(savedTab) ? savedTab : 'interfaces')
+watch(activeTab, name => writePreference('activeTab', name))
 
 const capabilities = computed(() => (version.value && version.value.capabilities) || null)
 

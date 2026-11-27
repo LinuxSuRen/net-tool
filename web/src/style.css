@@ -94,3 +94,29 @@ body {
 .text-dim {
   color: var(--color-text-dim);
 }
+
+/* 列表过滤条：名称/类型/状态等条件，刷新后由 localStorage 恢复 */
+.filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.filter-bar__keyword {
+  width: 240px;
+}
+
+.filter-bar__select {
+  width: 140px;
+}
+
+.filter-bar__count {
+  font-size: 13px;
+  color: var(--color-text-dim);
+}
+
+.filter-bar__reset {
+  margin-left: auto;
+}

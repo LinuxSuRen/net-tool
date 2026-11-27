@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { scanWifi, connectWifi, disconnectWifi, getInterfaces } from '../api'
+import { usePersistentFilter } from '../preferences'
 
 const props = defineProps({
   capabilities: { type: Object, default: null }
@@ -20,6 +21,12 @@ const remember = ref(false)
 const attempts = ref(3)
 const connecting = ref(false)
 const disconnectingSSID = ref('')
+
+const { filter, resetFilter } = usePersistentFilter('wifi', {
+  keyword: '',
+  security: 'all',
+  status: 'all'
+})
 
 // 记住密码只保存在当前浏览器，按 SSID 隔离；后端不接收该选项，也不落盘密码。
 const REMEMBER_PREFIX = 'net-tool.wifi.password.'
@@ -68,6 +75,31 @@ const currentSSID = computed(() => activeWifiInterface.value?.ssid || '')
 function isCurrent(row) {
   return !!row.current || (!!currentSSID.value && row.ssid === currentSSID.value)
 }
+
+// 安全性选项来自本次扫描结果，包含 WPA2/WPA3-Personal 等实际值
+const securityOptions = computed(() =>
+  [...new Set(networks.value.map(row => row.security).filter(Boolean))].sort()
+)
+
+const filteredNetworks = computed(() => {
+  const q = String(filter.keyword || '').trim().toLowerCase()
+  return networks.value.filter(row => {
+    if (q) {
+      const text = [row.ssid, row.security, row.channel]
+        .filter(value => value !== undefined && value !== null)
+        .join(' ').toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    if (filter.security === 'open') {
+      if (row.security) return false
+    } else if (filter.security !== 'all' && row.security !== filter.security) {
+      return false
+    }
+    if (filter.status === 'current' && !isCurrent(row)) return false
+    if (filter.status === 'other' && isCurrent(row)) return false
+    return true
+  })
+})
 
 async function scan() {
   if (!scanSupported.value) return
@@ -188,50 +220,73 @@ onMounted(() => {
       description="服务端已尝试弹出系统定位授权窗口，请在弹窗中点击允许后重新扫描；若未出现弹窗，请在系统设置的隐私与安全性中为终端 App 开启定位服务后再试。"
     />
 
-    <el-table v-else v-loading="loading" :data="networks" border>
-      <el-table-column label="SSID" min-width="160">
-        <template #default="{ row }">
-          <span class="mono">{{ row.ssid }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="信号" min-width="170">
-        <template #default="{ row }">
-          <div class="wifi-signal">
-            <el-progress :percentage="row.signal || 0" :stroke-width="6" :show-text="false" class="wifi-signal__bar" />
-            <span class="wifi-signal__num">{{ row.signal || 0 }}%</span>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="安全性" min-width="120">
-        <template #default="{ row }">
-          <span v-if="row.security">{{ row.security }}</span>
-          <span v-else class="text-dim">开放</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="信道" width="80">
-        <template #default="{ row }">
-          <span class="mono">{{ row.channel || '—' }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="当前" width="80">
-        <template #default="{ row }">
-          <el-tag v-if="isCurrent(row)" type="success" size="small">当前</el-tag>
-          <span v-else class="text-dim">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right">
-        <template #default="{ row }">
-          <el-button
-            v-if="isCurrent(row)"
-            link
-            type="danger"
-            :loading="disconnectingSSID === row.ssid"
-            @click="handleDisconnect(row)"
-          >断开</el-button>
-          <el-button v-else link type="primary" @click="openConnect(row)">连接</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+    <template v-else>
+      <div class="filter-bar">
+        <el-input
+          v-model="filter.keyword"
+          class="filter-bar__keyword"
+          placeholder="按 SSID 或安全性过滤"
+          clearable
+        />
+        <el-select v-model="filter.security" class="filter-bar__select">
+          <el-option label="全部安全性" value="all" />
+          <el-option label="开放" value="open" />
+          <el-option v-for="sec in securityOptions" :key="sec" :label="sec" :value="sec" />
+        </el-select>
+        <el-select v-model="filter.status" class="filter-bar__select">
+          <el-option label="全部状态" value="all" />
+          <el-option label="当前连接" value="current" />
+          <el-option label="其他网络" value="other" />
+        </el-select>
+        <span class="filter-bar__count">{{ filteredNetworks.length }} / {{ networks.length }}</span>
+        <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+      </div>
+
+      <el-table v-loading="loading" :data="filteredNetworks" border empty-text="没有匹配的网络">
+        <el-table-column label="SSID" min-width="160">
+          <template #default="{ row }">
+            <span class="mono">{{ row.ssid }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="信号" min-width="170">
+          <template #default="{ row }">
+            <div class="wifi-signal">
+              <el-progress :percentage="row.signal || 0" :stroke-width="6" :show-text="false" class="wifi-signal__bar" />
+              <span class="wifi-signal__num">{{ row.signal || 0 }}%</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="安全性" min-width="120">
+          <template #default="{ row }">
+            <span v-if="row.security">{{ row.security }}</span>
+            <span v-else class="text-dim">开放</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="信道" width="80">
+          <template #default="{ row }">
+            <span class="mono">{{ row.channel || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="当前" width="80">
+          <template #default="{ row }">
+            <el-tag v-if="isCurrent(row)" type="success" size="small">当前</el-tag>
+            <span v-else class="text-dim">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button
+              v-if="isCurrent(row)"
+              link
+              type="danger"
+              :loading="disconnectingSSID === row.ssid"
+              @click="handleDisconnect(row)"
+            >断开</el-button>
+            <el-button v-else link type="primary" @click="openConnect(row)">连接</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </template>
 
     <el-dialog
       :model-value="dialogVisible"

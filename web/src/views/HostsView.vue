@@ -1,14 +1,40 @@
 <script setup>
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Refresh } from '@element-plus/icons-vue'
 import { listHosts, addHost, removeHost } from '../api'
+import { usePersistentFilter } from '../preferences'
 
 const entries = ref([])
 const loading = ref(false)
 const dialogVisible = ref(false)
 const saving = ref(false)
 const formRef = ref(null)
+
+const { filter, resetFilter } = usePersistentFilter('hosts', {
+  keyword: '',
+  type: 'all',
+  status: 'all'
+})
+
+// hosts 条目没有独立的“状态/类型”字段：这里按 IP 版本分类，并把是否由
+// net-tool 管理作为可过滤的状态（系统条目不可删除）。
+function ipVersion(ip) {
+  return String(ip || '').includes(':') ? 'ipv6' : 'ipv4'
+}
+
+const filteredEntries = computed(() => {
+  const q = String(filter.keyword || '').trim().toLowerCase()
+  return entries.value.filter(row => {
+    if (q) {
+      const text = [row.ip, ...(row.hostnames || [])].filter(Boolean).join(' ').toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    if (filter.type !== 'all' && ipVersion(row.ip) !== filter.type) return false
+    if (filter.status !== 'all' && !!row.managed !== (filter.status === 'managed')) return false
+    return true
+  })
+})
 
 const form = reactive({
   ip: '',
@@ -110,7 +136,28 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="entries" border>
+    <div class="filter-bar">
+      <el-input
+        v-model="filter.keyword"
+        class="filter-bar__keyword"
+        placeholder="按 IP 或域名过滤"
+        clearable
+      />
+      <el-select v-model="filter.type" class="filter-bar__select">
+        <el-option label="全部类型" value="all" />
+        <el-option label="IPv4" value="ipv4" />
+        <el-option label="IPv6" value="ipv6" />
+      </el-select>
+      <el-select v-model="filter.status" class="filter-bar__select">
+        <el-option label="全部状态" value="all" />
+        <el-option label="net-tool 管理" value="managed" />
+        <el-option label="系统" value="system" />
+      </el-select>
+      <span class="filter-bar__count">{{ filteredEntries.length }} / {{ entries.length }}</span>
+      <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+    </div>
+
+    <el-table v-loading="loading" :data="filteredEntries" border empty-text="没有匹配的记录">
       <el-table-column label="IP 地址" min-width="140">
         <template #default="{ row }">
           <span class="mono">{{ row.ip }}</span>

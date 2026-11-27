@@ -1,8 +1,9 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Refresh } from '@element-plus/icons-vue'
 import { getInterfaces } from '../api'
+import { usePersistentFilter } from '../preferences'
 import InterfaceDialog from '../components/InterfaceDialog.vue'
 
 const props = defineProps({
@@ -21,10 +22,33 @@ const loading = ref(false)
 const dialogVisible = ref(false)
 const editing = ref(null)
 
+const { filter, resetFilter } = usePersistentFilter('interfaces', {
+  keyword: '',
+  type: 'all',
+  status: 'all',
+  mode: 'all'
+})
+
 function ipv4Addresses(row) {
   const ips = Array.isArray(row.ips) ? row.ips : []
   return ips.filter(ip => ip.family === 'ipv4').map(ip => ip.address)
 }
+
+const filteredList = computed(() => {
+  const q = String(filter.keyword || '').trim().toLowerCase()
+  return list.value.filter(row => {
+    if (q) {
+      const text = [row.name, row.hardware_addr, row.gateway,
+        ...ipv4Addresses(row), ...(row.dns || [])]
+        .filter(Boolean).join(' ').toLowerCase()
+      if (!text.includes(q)) return false
+    }
+    if (filter.type !== 'all' && row.type !== filter.type) return false
+    if (filter.status !== 'all' && !!row.up !== (filter.status === 'up')) return false
+    if (filter.mode !== 'all' && !!row.dhcp !== (filter.mode === 'dhcp')) return false
+    return true
+  })
+})
 
 async function load() {
   loading.value = true
@@ -58,7 +82,32 @@ onMounted(load)
       </div>
     </div>
 
-    <el-table v-loading="loading" :data="list" border>
+    <div class="filter-bar">
+      <el-input
+        v-model="filter.keyword"
+        class="filter-bar__keyword"
+        placeholder="按名称、MAC、IP 或 DNS 过滤"
+        clearable
+      />
+      <el-select v-model="filter.type" class="filter-bar__select">
+        <el-option label="全部类型" value="all" />
+        <el-option v-for="(label, value) in TYPE_TEXT" :key="value" :label="label" :value="value" />
+      </el-select>
+      <el-select v-model="filter.status" class="filter-bar__select">
+        <el-option label="全部状态" value="all" />
+        <el-option label="已启用" value="up" />
+        <el-option label="已停用" value="down" />
+      </el-select>
+      <el-select v-model="filter.mode" class="filter-bar__select">
+        <el-option label="全部模式" value="all" />
+        <el-option label="DHCP" value="dhcp" />
+        <el-option label="静态" value="static" />
+      </el-select>
+      <span class="filter-bar__count">{{ filteredList.length }} / {{ list.length }}</span>
+      <el-button class="filter-bar__reset" link @click="resetFilter">重置过滤</el-button>
+    </div>
+
+    <el-table v-loading="loading" :data="filteredList" border empty-text="没有匹配的网卡">
       <el-table-column label="名称" min-width="170">
         <template #default="{ row }">
           <div class="mono">{{ row.name }}</div>
